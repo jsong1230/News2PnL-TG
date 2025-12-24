@@ -463,7 +463,30 @@ def create_digest(news_items: List[NewsItem],
     korea_impact = f"{impact_level} - {impact_reason}"
     
     # 9. 소스 URL (중복 제거, 최대 5개)
-    sources = list(dict.fromkeys([item.url for item in selected_items[:10]]))[:5]
+    # selected_items에서 유효한 URL만 추출 (example.com 제외)
+    valid_urls = []
+    for item in selected_items[:10]:
+        url = item.url.strip() if item.url else ""
+        # example.com이나 더미 URL 제외
+        if url and not url.startswith("https://example.com") and "example.com" not in url:
+            valid_urls.append(url)
+    
+    # 유효한 URL이 부족하면 전체 unique_news에서도 가져오기
+    if len(valid_urls) < 5:
+        for item in unique_news:
+            if len(valid_urls) >= 5:
+                break
+            url = item.url.strip() if item.url else ""
+            if url and url not in valid_urls and not url.startswith("https://example.com") and "example.com" not in url:
+                valid_urls.append(url)
+    
+    sources = valid_urls[:5]
+    
+    # 디버그 로그
+    if sources:
+        logger.info(f"근거 링크 {len(sources)}개 추출: {sources[:2]}...")
+    else:
+        logger.warning("근거 링크가 없습니다 (모든 URL이 example.com이거나 유효하지 않음)")
     
     return NewsDigest(
         top_headlines=top_headlines,
