@@ -225,6 +225,8 @@ GitHub 저장소의 **Settings > Secrets and variables > Actions**에서 다음 
 |------------|------|------|------|
 | `TELEGRAM_BOT_TOKEN` | 텔레그램 봇 토큰 (BotFather에서 발급) | 예 | `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz` |
 | `TELEGRAM_CHAT_ID` | 텔레그램 채널 ID (`-100...` 형태) | 예 | `-1001234567890` |
+| `OPENAI_API_KEY` | OpenAI API 키 (LLM 사용 시) | 선택 | `sk-...` |
+| `LLM_MODEL` | LLM 모델명 (기본값: gpt-4o-mini) | 선택 | `gpt-4o-mini` |
 
 ### 3. 워크플로우 스케줄 (KST ↔ UTC 변환)
 
@@ -250,6 +252,12 @@ GitHub Actions의 cron은 **UTC 기준**입니다. 한국 시간(KST)과의 변�
 | `MARKET_PROVIDER` | `yahoo` | 시세 제공자 (운영 기본) |
 | `TZ` | `Asia/Seoul` | 타임존 (로그용) |
 | `TELEGRAM_REQUIRED` | `false` | 텔레그램 전송 실패 시 워크플로우 실패 여부 |
+| `LLM_ENABLED` | `false` | LLM 사용 여부 (관찰 종목 선정) |
+| `OPENAI_API_KEY` | - | OpenAI API 키 (LLM_ENABLED=true일 때 필요) |
+| `LLM_MODEL` | `gpt-4o-mini` | LLM 모델명 |
+| `LLM_MAX_TOKENS` | `800` | 최대 토큰 수 |
+| `LLM_TEMPERATURE` | `0.2` | 온도 (0.0~1.0) |
+| `LLM_DAILY_BUDGET_TOKENS` | `20000` | 일일 토큰 예산 |
 
 **개발/디버그용 환경변수** (로컬 실행 시):
 

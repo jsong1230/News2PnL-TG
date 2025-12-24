@@ -40,6 +40,9 @@ jobs:
           MARKET_PROVIDER: yahoo
           TZ: Asia/Seoul
           TELEGRAM_REQUIRED: false
+          LLM_ENABLED: ${{ secrets.LLM_ENABLED || 'false' }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL || 'gpt-4o-mini' }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
         run: |
           python -m scripts.run_morning
       

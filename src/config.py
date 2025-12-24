@@ -58,6 +58,18 @@ MONTHLY_INCLUDE_DUMMY = os.getenv("MONTHLY_INCLUDE_DUMMY", "false").lower() == "
 # 텔레그램 전송 실패 시 워크플로우 실패 여부 (기본: False, warning만)
 TELEGRAM_REQUIRED = os.getenv("TELEGRAM_REQUIRED", "false").lower() == "true"
 
+# LLM 설정 (OpenAI 전용)
+LLM_ENABLED = os.getenv("LLM_ENABLED", "false").lower() == "true"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")  # 기본값: gpt-4o-mini
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "800"))
+LLM_DAILY_BUDGET_TOKENS = int(os.getenv("LLM_DAILY_BUDGET_TOKENS", "20000"))
+
+# 하위 호환성: LLM_API_KEY도 지원
+if not OPENAI_API_KEY:
+    OPENAI_API_KEY = os.getenv("LLM_API_KEY", "")
+
 # DB 경로
 DB_PATH = Path(__file__).parent.parent / "db" / "market.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)

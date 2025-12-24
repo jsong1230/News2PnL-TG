@@ -4,3 +4,8 @@ requests>=2.31.0
 python-dateutil>=2.8.2
 yfinance>=0.2.0
 
+# LLM providers (선택적)
+# OpenAI: pip install openai
+# Anthropic: pip install anthropic
+# OpenRouter: pip install openai (OpenAI 호환 API 사용)
+

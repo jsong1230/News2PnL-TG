@@ -4,7 +4,10 @@ from typing import List
 from datetime import datetime
 from collections import defaultdict
 
-from src.config import NEWS_PROVIDER, GOOGLE_NEWS_QUERY, GOOGLE_NEWS_QUERIES, GOOGLE_NEWS_MAX_PER_QUERY, NEWS_WINDOW_MODE, DEFAULT_NEWS_QUERIES
+from src.config import (
+    NEWS_PROVIDER, GOOGLE_NEWS_QUERY, GOOGLE_NEWS_QUERIES, GOOGLE_NEWS_MAX_PER_QUERY,
+    NEWS_WINDOW_MODE, DEFAULT_NEWS_QUERIES, LLM_ENABLED, LLM_MODEL
+)
 from src.news.provider import get_news_provider, DummyNewsProvider
 from src.news.base import NewsItem
 from src.analysis.news_analyzer import create_digest, NewsDigest
@@ -258,7 +261,15 @@ def generate_morning_report() -> str:
     
     # 9. 관찰 종목 선정 및 리포트 추가
     try:
-        watch_stocks = pick_watch_stocks(digest, time_filtered_items, max_count=3)
+        # LLM 사용 여부 로그
+        if LLM_ENABLED:
+            logger.info(f"LLM 사용: model={LLM_MODEL}")
+            print(f"[LLM] 사용: model={LLM_MODEL}")
+        else:
+            logger.info("LLM 비활성화, 룰 기반 선정 사용")
+            print("[LLM] 비활성화, 룰 기반 선정 사용")
+        
+        watch_stocks = pick_watch_stocks(digest, time_filtered_items, max_count=3, date_str=today)
         
         if watch_stocks:
             report += "*👀 오늘의 관찰 리스트 (교육용 시뮬레이션)*\n\n"
