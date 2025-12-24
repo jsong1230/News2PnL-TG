@@ -1,0 +1,51 @@
+name: Monthly Report
+
+on:
+  schedule:
+    # 매일 UTC 09:00 (KST 18:00)에 실행하되, 내부에서 월말 체크
+    # cron으로 정확한 말일을 잡을 수 없으므로 매일 실행 후 스크립트 내부에서 필터링
+    - cron: '0 9 * * *'  # 매일 UTC 09:00
+  workflow_dispatch:  # 수동 실행 가능
+
+concurrency:
+  group: monthly-report
+  cancel-in-progress: false
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run monthly report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NEWS_WINDOW_MODE: strict
+          MARKET_PROVIDER: yahoo
+          TZ: Asia/Seoul
+          TELEGRAM_REQUIRED: false
+        run: |
+          python -m scripts.run_monthly
+      
+      - name: Commit and push if DB changed
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: update market.db (monthly report)'
+          file_pattern: 'db/market.db'
+          skip_dirty_check: true
+

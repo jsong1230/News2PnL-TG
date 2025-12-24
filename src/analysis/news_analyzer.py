@@ -1,0 +1,477 @@
+"""뉴스 분석 및 다이제스트 생성 모듈"""
+from typing import List, Dict, Tuple
+from dataclasses import dataclass
+import re
+import logging
+from collections import defaultdict
+
+from src.news.base import NewsItem
+from src.analysis.sector_keywords import SECTOR_KEYWORDS
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class NewsDigest:
+    """뉴스 다이제스트"""
+    top_headlines: List[str]  # 최대 8개
+    macro_summary: str  # 5줄 이내
+    sector_bullets: Dict[str, List[str]]  # 섹터별 뉴스 (섹터 5개 정도)
+    korea_impact: str  # "상/중/하" + 이유 한 줄
+    sources: List[str]  # URL 리스트 (중복 제거, 최대 5개)
+    fetched_count: int  # 수집된 총 기사 수
+    time_filtered_count: int  # 시간 필터 후 기사 수
+    deduped_count: int  # 중복 제거 후 기사 수
+
+
+# 노이즈 필터 키워드
+NOISE_KEYWORDS = [
+    "할인", "이벤트", "프로모션", "쿠폰", "카톡 친구", "오픈", "출시 기념", "연휴",
+    "맛집", "닭갈비", "연예", "결혼", "스캔들", "날씨", "운세", "부동산 분양",
+    "기념일", "축제", "행사", "공연", "영화", "드라마", "예능", "가수", "아이돌",
+    "패션", "뷰티", "화장품", "식품", "레시피", "요리", "여행", "관광", "호텔",
+    "카지노", "로또", "복권", "경품", "추첨", "당첨", "무료", "증정", "사은품"
+]
+
+# 시장 관련도 우선순위 키워드 (가중치 높음)
+MARKET_KEYWORDS = {
+    # 증시/주가 (가중치 10)
+    "증시": 10, "주가": 10, "코스피": 10, "코스닥": 10, "kospi": 10, "kosdaq": 10,
+    "s&p": 10, "sp500": 10, "s&p 500": 10, "s&p500": 10,
+    "나스닥": 10, "nasdaq": 10, "다우": 10, "dow": 10,
+    
+    # 금리/연준 (가중치 9)
+    "연준": 9, "fed": 9, "기준금리": 9, "금리": 9, "cpi": 9, "ppi": 9, "pce": 9,
+    "인플레이션": 9, "인플레": 9,
+    
+    # 환율/달러 (가중치 8)
+    "환율": 8, "달러": 8, "원달러": 8, "dxy": 8, "달러인덱스": 8,
+    
+    # 유가/원자재 (가중치 8)
+    "유가": 8, "원유": 8, "wti": 8, "브렌트": 8, "석유": 8,
+    
+    # 반도체/AI (가중치 9)
+    "반도체": 9, "칩": 9, "메모리": 9, "dram": 9, "nand": 9, "hbm": 9,
+    "ai": 9, "인공지능": 9, "chatgpt": 9, "gpt": 9, "llm": 9,
+    "엔비디아": 9, "nvidia": 9, "amd": 9, "tsmc": 9, "대만반도체": 9,
+    
+    # 주요 종목 (가중치 8)
+    "삼성전자": 8, "sk하이닉스": 8, "하이닉스": 8, "sk hynix": 8,
+    
+    # 실적/수출 (가중치 7)
+    "실적": 7, "수출": 7, "수입": 7, "무역": 7,
+    
+    # 정책/규제 (가중치 7)
+    "규제": 7, "관세": 7, "정책": 7, "법안": 7,
+    
+    # 지정학/방산 (가중치 7)
+    "지정학": 7, "전쟁": 7, "방산": 7, "방위": 7,
+}
+
+
+def normalize_title(title: str) -> str:
+    """제목 정규화 (중복 제거용)"""
+    # 소문자 변환
+    title = title.lower()
+    # 특수문자 제거 (한글, 영문, 숫자만 남김)
+    title = re.sub(r'[^\w\s가-힣]', '', title)
+    # 공백 정규화
+    title = re.sub(r'\s+', ' ', title).strip()
+    return title
+
+
+def jaccard_similarity(text1: str, text2: str) -> float:
+    """Jaccard 유사도 계산 (단어 기반)"""
+    words1 = set(text1.split())
+    words2 = set(text2.split())
+    
+    if not words1 or not words2:
+        return 0.0
+    
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    
+    return intersection / union if union > 0 else 0.0
+
+
+def is_noise_article(title: str, source: str = "", url: str = "") -> bool:
+    """
+    노이즈 기사 판단 (광고/생활뉴스 제외)
+    
+    Args:
+        title: 기사 제목
+        source: 출처 (선택)
+        url: URL (선택)
+    
+    Returns:
+        True면 노이즈 (제외 대상)
+    """
+    text = (title + " " + source + " " + url).lower()
+    
+    # 노이즈 키워드 체크
+    for keyword in NOISE_KEYWORDS:
+        if keyword in text:
+            return True
+    
+    return False
+
+
+def score_headline(item: NewsItem) -> float:
+    """
+    헤드라인 시장 관련도 점수 계산
+    
+    Args:
+        item: 뉴스 아이템
+    
+    Returns:
+        점수 (높을수록 시장 관련도 높음)
+    """
+    text = (item.title + " " + (item.content or "")).lower()
+    
+    score = 0.0
+    
+    # 시장 관련도 키워드 매칭
+    for keyword, weight in MARKET_KEYWORDS.items():
+        if keyword in text:
+            score += weight
+    
+    # published_at이 최신일수록 보너스 (최근 6시간 이내면 +5)
+    if item.published_at:
+        from datetime import datetime, timedelta
+        from pytz import UTC
+        now_utc = datetime.now(UTC)
+        item_utc = item.published_at
+        if item_utc.tzinfo != UTC:
+            item_utc = item_utc.astimezone(UTC)
+        
+        hours_ago = (now_utc - item_utc).total_seconds() / 3600
+        if hours_ago <= 6:
+            score += 5
+        elif hours_ago <= 12:
+            score += 2
+    
+    return score
+
+
+def remove_duplicates(news_items: List[NewsItem], 
+                     title_threshold: float = 0.85) -> List[NewsItem]:
+    """
+    중복 뉴스 제거 (제목 유사도만 사용)
+    
+    Google News 링크의 경우 도메인/슬러그 유사도는 적용하지 않음
+    
+    Args:
+        news_items: 뉴스 아이템 리스트
+        title_threshold: 제목 유사도 임계값 (0.85)
+    
+    Returns:
+        중복 제거된 뉴스 리스트
+    """
+    if not news_items:
+        return []
+    
+    # 정규화된 제목으로 중복 체크
+    seen = []
+    unique_items = []
+    
+    for item in news_items:
+        normalized = normalize_title(item.title)
+        is_duplicate = False
+        
+        for seen_normalized, seen_item in seen:
+            # 제목 유사도만 체크 (Google News 링크는 도메인/슬러그 유사도 제외)
+            title_sim = jaccard_similarity(normalized, seen_normalized)
+            
+            if title_sim >= title_threshold:
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            seen.append((normalized, item))
+            unique_items.append(item)
+    
+    return unique_items
+
+
+def classify_sector(title: str, content: str = "") -> str:
+    """
+    섹터 분류 (키워드 기반, 우선순위 개선)
+    
+    Returns:
+        섹터명 (없으면 "기타")
+    """
+    text = (title + " " + content).lower()
+    
+    # 코인/크립토 우선 체크 (거시 섹터보다 우선)
+    crypto_keywords = [
+        "비트코인", "btc", "이더리움", "eth", "코인", "크립토", "암호화폐",
+        "블록체인", "디파이", "defi", "nft", "가상자산", "가상화폐",
+        "비트코인 etf", "비트코인 현물 etf"
+    ]
+    if any(kw in text for kw in crypto_keywords):
+        return "코인/크립토"
+    
+    # 바이오/헬스 우선 체크 (AI보다 우선)
+    bio_keywords = [
+        "셀트리온", "노보", "glp-1", "fda", "임상", "신약", "제약", "바이오",
+        "삼성바이오로직스", "유한양행", "한미약품", "헬스케어", "의료", "바이오텍"
+    ]
+    if any(kw in text for kw in bio_keywords):
+        return "바이오/헬스"
+    
+    # 반도체/AI 섹터 (명확한 키워드 중심)
+    semi_keywords = [
+        "nvidia", "엔비디아", "반도체", "dram", "hbm", "파운드리", "tsmc", "amd",
+        "삼성전자", "sk하이닉스", "하이닉스", "sk hynix", "메모리", "칩"
+    ]
+    if any(kw in text for kw in semi_keywords):
+        return "반도체/AI"
+    
+    # 섹터별로 키워드 매칭 (우선순위 순, 코인은 이미 처리됨)
+    for sector, keywords in SECTOR_KEYWORDS.items():
+        if sector == "코인/크립토":  # 이미 처리됨
+            continue
+        if any(keyword.lower() in text for keyword in keywords):
+            return sector
+    
+    return "기타"
+
+
+def generate_macro_summary(news_items: List[NewsItem]) -> str:
+    """
+    거시 요약 생성 (키워드 기반 템플릿)
+    
+    Args:
+        news_items: 뉴스 아이템 리스트
+    
+    Returns:
+        5줄 이내 요약 텍스트
+    """
+    if not news_items:
+        return "수집된 뉴스가 없습니다."
+    
+    # 키워드 빈도 계산
+    all_text = " ".join([item.title + " " + (item.content or "") for item in news_items])
+    all_text_lower = all_text.lower()
+    
+    # 주요 거시 지표 키워드 체크
+    macro_indicators = {
+        "S&P": ["s&p", "sp500", "s&p 500", "s&p500"],
+        "나스닥": ["나스닥", "nasdaq", "nasdaq 100"],
+        "금리": ["금리", "연준", "fed", "기준금리", "인플레이션", "인플레", "cpi"],
+        "달러": ["달러", "dxy", "달러인덱스", "원달러", "환율"],
+        "유가": ["유가", "원유", "wti", "브렌트", "석유"],
+        "비트코인": ["비트코인", "btc", "비트코인 etf", "비트코인 현물 etf"],
+    }
+    
+    found_indicators = []
+    for indicator, keywords in macro_indicators.items():
+        if any(kw in all_text_lower for kw in keywords):
+            found_indicators.append(indicator)
+    
+    # 키워드 빈도 계산
+    keywords = {
+        "상승": ["상승", "급등", "반등", "회복", "개선", "증가"],
+        "하락": ["하락", "급락", "폭락", "약세", "감소", "축소"],
+        "긍정": ["긍정", "호재", "기대", "전망", "낙관", "성장"],
+        "부정": ["부정", "악재", "우려", "불안", "비관", "위험"],
+    }
+    
+    keyword_counts = {}
+    for category, words in keywords.items():
+        count = sum(1 for word in words if word in all_text_lower)
+        keyword_counts[category] = count
+    
+    # 템플릿 기반 요약 생성
+    lines = []
+    
+    # 1. 거시 지표 언급
+    if found_indicators:
+        indicators_str = ", ".join(found_indicators[:3])
+        lines.append(f"• 주요 거시 지표: {indicators_str}")
+    
+    # 2. 전체 톤
+    if keyword_counts.get("긍정", 0) > keyword_counts.get("부정", 0):
+        tone = "긍정적"
+    elif keyword_counts.get("부정", 0) > keyword_counts.get("긍정", 0):
+        tone = "신중"
+    else:
+        tone = "중립"
+    
+    lines.append(f"• 전반적 톤: {tone}적 분위기")
+    
+    # 3. 주요 섹터
+    sector_counts = defaultdict(int)
+    for item in news_items:
+        sector = classify_sector(item.title, item.content or "")
+        if sector != "기타":
+            sector_counts[sector] += 1
+    
+    if sector_counts:
+        top_sectors = sorted(sector_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        sector_names = ", ".join([s for s, _ in top_sectors])
+        lines.append(f"• 주요 섹터: {sector_names}")
+    
+    # 4. 시장 동향
+    if keyword_counts.get("상승", 0) > keyword_counts.get("하락", 0):
+        lines.append("• 시장 동향: 상승 기대감 우세")
+    elif keyword_counts.get("하락", 0) > keyword_counts.get("상승", 0):
+        lines.append("• 시장 동향: 하락 우려 존재")
+    else:
+        lines.append("• 시장 동향: 혼조세")
+    
+    return "\n".join(lines[:5])  # 최대 5줄
+
+
+def assess_korea_impact(news_items: List[NewsItem]) -> tuple[str, str]:
+    """
+    한국장 영향도 평가
+    
+    Returns:
+        (등급, 이유) 튜플 - 등급: "상" | "중" | "하"
+    """
+    if not news_items:
+        return ("중", "뉴스 부족")
+    
+    all_text = " ".join([item.title + " " + (item.content or "") for item in news_items])
+    all_text_lower = all_text.lower()
+    
+    # 긍정/부정 키워드
+    positive_keywords = ["상승", "급등", "호재", "기대", "개선", "증가", "성장", "반등"]
+    negative_keywords = ["하락", "급락", "악재", "우려", "감소", "축소", "위험", "불안"]
+    
+    positive_count = sum(1 for kw in positive_keywords if kw in all_text_lower)
+    negative_count = sum(1 for kw in negative_keywords if kw in all_text_lower)
+    
+    # 주요 종목 언급 여부
+    major_stocks = ["삼성", "sk하이닉스", "네이버", "카카오", "lg", "현대", "기아"]
+    stock_mentions = sum(1 for stock in major_stocks if stock in all_text_lower)
+    
+    # 영향도 계산
+    if positive_count > negative_count * 1.5 and stock_mentions >= 2:
+        return ("상", "주요 종목 긍정 뉴스 다수")
+    elif negative_count > positive_count * 1.5 and stock_mentions >= 2:
+        return ("하", "주요 종목 부정 뉴스 존재")
+    elif stock_mentions >= 3:
+        return ("중", "주요 종목 다수 언급")
+    elif positive_count > negative_count:
+        return ("중", "전반적 긍정 톤")
+    elif negative_count > positive_count:
+        return ("중", "전반적 신중 톤")
+    else:
+        return ("중", "혼조세")
+
+
+def create_digest(news_items: List[NewsItem], 
+                  fetched_count: int = 0,
+                  time_filtered_count: int = 0) -> NewsDigest:
+    """
+    뉴스 다이제스트 생성 (노이즈 필터 + 랭킹 적용)
+    
+    Args:
+        news_items: 뉴스 아이템 리스트 (시간 필터 후)
+        fetched_count: 수집된 총 기사 수
+        time_filtered_count: 시간 필터 후 기사 수
+    
+    Returns:
+        NewsDigest 객체
+    """
+    if not news_items:
+        return NewsDigest(
+            top_headlines=[],
+            macro_summary="수집된 뉴스가 없습니다.",
+            sector_bullets={},
+            korea_impact="중 - 뉴스 부족",
+            sources=[],
+            fetched_count=fetched_count,
+            time_filtered_count=time_filtered_count,
+            deduped_count=0
+        )
+    
+    # 1. 중복 제거
+    before_dedup = len(news_items)
+    unique_news = remove_duplicates(news_items, title_threshold=0.85)
+    after_dedup = len(unique_news)
+    
+    logger.info(f"중복 제거: {before_dedup}건 → {after_dedup}건")
+    
+    # 2. 노이즈 필터 적용
+    filtered_news = []
+    noise_count = 0
+    for item in unique_news:
+        if is_noise_article(item.title, item.source or "", item.url):
+            noise_count += 1
+        else:
+            filtered_news.append(item)
+    
+    logger.info(f"노이즈 필터: {len(unique_news)}건 → {len(filtered_news)}건 (제외: {noise_count}건)")
+    
+    # 노이즈 필터가 너무 많이 제외하면 완화 (후보가 10개 미만이면)
+    if len(filtered_news) < 10:
+        logger.warning(f"노이즈 필터 후 후보가 {len(filtered_news)}개로 부족, 일부 복구")
+        # 노이즈 제외된 항목 중 일부 복구 (점수 높은 것부터)
+        noise_items = [item for item in unique_news if is_noise_article(item.title, item.source or "", item.url)]
+        noise_items.sort(key=score_headline, reverse=True)
+        # 상위 5개만 복구
+        filtered_news.extend(noise_items[:5])
+        logger.info(f"노이즈 항목 {min(5, len(noise_items))}개 복구")
+    
+    # 3. 시장 관련도 점수 계산 및 정렬
+    scored_news = [(item, score_headline(item)) for item in filtered_news]
+    scored_news.sort(key=lambda x: x[1], reverse=True)
+    
+    # 4. 섹터 다양성 보정 (한 섹터 최대 3개)
+    sector_counts = defaultdict(int)
+    selected_headlines = []
+    selected_items = []
+    
+    for item, score in scored_news:
+        sector = classify_sector(item.title, item.content or "")
+        
+        # 섹터별 최대 3개 제한
+        if sector_counts[sector] >= 3:
+            continue
+        
+        selected_headlines.append(item.title)
+        selected_items.append(item)
+        sector_counts[sector] += 1
+        
+        if len(selected_headlines) >= 8:
+            break
+    
+    # 5. 최신순 정렬 (published_at 기준)
+    selected_items.sort(key=lambda x: x.published_at, reverse=True)
+    top_headlines = [item.title for item in selected_items[:8]]
+    
+    # 6. 거시 요약 (전체 unique_news 기준)
+    macro_summary = generate_macro_summary(unique_news)
+    
+    # 7. 섹터별 분류 (전체 unique_news 기준)
+    sector_bullets: Dict[str, List[str]] = defaultdict(list)
+    for item in unique_news:
+        sector = classify_sector(item.title, item.content or "")
+        if len(sector_bullets[sector]) < 3:  # 섹터당 최대 3개
+            sector_bullets[sector].append(item.title)
+    
+    # "기타" 제외하고 상위 5개 섹터만
+    sector_items = [(k, v) for k, v in sector_bullets.items() if k != "기타"]
+    sector_items.sort(key=lambda x: len(x[1]), reverse=True)
+    sector_bullets = dict(sector_items[:5])
+    
+    # 8. 한국장 영향도
+    impact_level, impact_reason = assess_korea_impact(unique_news)
+    korea_impact = f"{impact_level} - {impact_reason}"
+    
+    # 9. 소스 URL (중복 제거, 최대 5개)
+    sources = list(dict.fromkeys([item.url for item in selected_items[:10]]))[:5]
+    
+    return NewsDigest(
+        top_headlines=top_headlines,
+        macro_summary=macro_summary,
+        sector_bullets=sector_bullets,
+        korea_impact=korea_impact,
+        sources=sources,
+        fetched_count=fetched_count,
+        time_filtered_count=time_filtered_count,
+        deduped_count=after_dedup
+    )

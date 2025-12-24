@@ -1,0 +1,52 @@
+name: Morning Report
+
+on:
+  schedule:
+    # KST 08:00 = UTC 23:00 (전날)
+    # 한국 평일 장 기준: 월~금 아침 실행
+    # UTC로는 일~목 23:00 (한국 시간 월~금 08:00)
+    - cron: '0 23 * * 0-4'  # 일~목 UTC (월~금 KST)
+  workflow_dispatch:  # 수동 실행 가능
+
+concurrency:
+  group: morning-report
+  cancel-in-progress: false
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run morning report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NEWS_WINDOW_MODE: strict
+          MARKET_PROVIDER: yahoo
+          TZ: Asia/Seoul
+          TELEGRAM_REQUIRED: false
+        run: |
+          python -m scripts.run_morning
+      
+      - name: Commit and push if DB changed
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: update market.db (morning report)'
+          file_pattern: 'db/market.db'
+          skip_dirty_check: true
+
