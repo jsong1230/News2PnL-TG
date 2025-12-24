@@ -614,35 +614,82 @@ def pick_watch_stocks(
         # 관련 뉴스 찾기 (더 넓은 범위에서 검색)
         catalysts = []
         
-        # 1. news_items에서 직접 매칭
+        # 해외 종목 매핑 확인 (엔비디아 → 삼성전자/SK하이닉스 등)
+        foreign_substitutes = get_foreign_substitute_symbols(stock_name)
+        related_stock_names = [stock_name] + foreign_substitutes
+        
+        # 1. news_items에서 직접 매칭 (종목명 + 해외 대체 종목)
         for item in news_items:
             title_lower = item.title.lower()
-            stock_lower = stock_name.lower()
-            if stock_lower in title_lower or stock_name in item.title:
-                catalysts.append(item.title)
-                if len(catalysts) >= 2:
-                    break
+            for related_name in related_stock_names:
+                related_lower = related_name.lower()
+                if related_lower in title_lower or related_name in item.title:
+                    catalysts.append(item.title)
+                    if len(catalysts) >= 2:
+                        break
+            if len(catalysts) >= 2:
+                break
         
-        # 2. digest의 헤드라인에서도 찾기
+        # 2. digest의 헤드라인에서도 찾기 (종목명 + 해외 대체 종목)
         if len(catalysts) < 2:
             for headline in digest.top_headlines:
-                if stock_name.lower() in headline.lower() or stock_name in headline:
-                    if headline not in catalysts:
-                        catalysts.append(headline)
-                        if len(catalysts) >= 2:
-                            break
-        
-        # 3. 섹터 bullets에서도 찾기
-        if len(catalysts) < 2:
-            for sector, bullets in digest.sector_bullets.items():
-                for bullet in bullets:
-                    if stock_name.lower() in bullet.lower() or stock_name in bullet:
-                        if bullet not in catalysts:
-                            catalysts.append(bullet)
+                headline_lower = headline.lower()
+                for related_name in related_stock_names:
+                    related_lower = related_name.lower()
+                    if related_lower in headline_lower or related_name in headline:
+                        if headline not in catalysts:
+                            catalysts.append(headline)
                             if len(catalysts) >= 2:
                                 break
                 if len(catalysts) >= 2:
                     break
+        
+        # 3. 섹터 bullets에서도 찾기 (종목명 + 해외 대체 종목)
+        if len(catalysts) < 2:
+            for sector, bullets in digest.sector_bullets.items():
+                for bullet in bullets:
+                    bullet_lower = bullet.lower()
+                    for related_name in related_stock_names:
+                        related_lower = related_name.lower()
+                        if related_lower in bullet_lower or related_name in bullet:
+                            if bullet not in catalysts:
+                                catalysts.append(bullet)
+                                if len(catalysts) >= 2:
+                                    break
+                    if len(catalysts) >= 2:
+                        break
+                if len(catalysts) >= 2:
+                    break
+        
+        # 4. 해외 종목 관련 뉴스도 찾기 (역방향: 엔비디아 뉴스 → 삼성전자 Catalyst)
+        if len(catalysts) < 2:
+            # FOREIGN_TO_KR_MAPPING에서 이 종목이 대체 종목인 해외 종목 찾기
+            from src.data.kr_symbols import FOREIGN_TO_KR_MAPPING
+            for foreign_name, kr_stocks in FOREIGN_TO_KR_MAPPING.items():
+                if stock_name in kr_stocks:
+                    # 이 해외 종목이 언급된 뉴스 찾기
+                    for item in news_items:
+                        title_lower = item.title.lower()
+                        foreign_lower = foreign_name.lower()
+                        if foreign_lower in title_lower or foreign_name in item.title:
+                            if item.title not in catalysts:
+                                catalysts.append(item.title)
+                                if len(catalysts) >= 2:
+                                    break
+                    if len(catalysts) >= 2:
+                        break
+                    
+                    # 헤드라인에서도 찾기
+                    for headline in digest.top_headlines:
+                        headline_lower = headline.lower()
+                        foreign_lower = foreign_name.lower()
+                        if foreign_lower in headline_lower or foreign_name in headline:
+                            if headline not in catalysts:
+                                catalysts.append(headline)
+                                if len(catalysts) >= 2:
+                                    break
+                    if len(catalysts) >= 2:
+                        break
         
         # catalyst가 없으면 섹터 기반으로 생성
         if not catalysts:
