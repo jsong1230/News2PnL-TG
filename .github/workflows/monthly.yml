@@ -48,4 +48,5 @@ jobs:
           commit_message: 'chore: update market.db (monthly report)'
           file_pattern: 'db/market.db'
           skip_dirty_check: true
+        continue-on-error: true  # 변경사항이 없을 때 실패하지 않도록
 
