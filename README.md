@@ -279,9 +279,13 @@ GitHub Actions의 cron은 **UTC 기준**입니다. 한국 시간(KST)과의 변�
 
 ### 7. 안전장치
 
-- **텔레그램 전송 실패**: 기본적으로 `TELEGRAM_REQUIRED=false`이므로, 전송 실패 시 warning만 출력하고 워크플로우는 계속 진행됩니다.
+- **텔레그램 전송 실패 처리**:
+  - 기본값: `TELEGRAM_REQUIRED=false`
+  - `false`일 때: 전송 실패 시 warning만 출력하고 워크플로우는 계속 진행됩니다 (exit code 0)
+  - `true`일 때: 전송 실패 시 워크플로우가 실패합니다 (exit code 1)
+  - 400 Bad Request 등의 에러 발생 시 상세 에러 메시지가 로깅됩니다
 - **재시도 로직**: 네트워크 오류나 rate limit 발생 시 2회까지 재시도 (간격 2초)
-- **Dry-run 모드**: 토큰이나 채팅 ID가 없으면 자동으로 dry-run 모드로 실행되어 메시지는 콘솔에 출력됩니다.
+- **Dry-run 모드**: 토큰이나 채팅 ID가 없으면 자동으로 dry-run 모드로 실행되어 메시지는 콘솔에 출력됩니다
 
 ## 개발 가이드
 
