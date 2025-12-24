@@ -111,6 +111,17 @@ def send_message(text: str, parse_mode: Optional[str] = "Markdown") -> bool:
                     json=payload,
                     timeout=TIMEOUT
                 )
+                
+                # 400 Bad Request 등의 상세 정보 로깅
+                if response.status_code == 400:
+                    try:
+                        error_json = response.json()
+                        error_desc = error_json.get("description", "")
+                        logger.error(f"텔레그램 API 400 에러 상세: {error_desc}")
+                        print(f"⚠️  텔레그램 API 400 에러: {error_desc}")
+                    except:
+                        pass
+                
                 response.raise_for_status()
                 
                 result = response.json()
@@ -130,7 +141,20 @@ def send_message(text: str, parse_mode: Optional[str] = "Markdown") -> bool:
                     time.sleep(RETRY_DELAY)  # 2초 대기 후 재시도
             
             except requests.exceptions.RequestException as e:
-                last_error = f"네트워크 오류: {e}"
+                # 400 Bad Request 등의 상세 정보 추출
+                error_detail = str(e)
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_json = e.response.json()
+                        error_desc = error_json.get("description", "")
+                        error_code = error_json.get("error_code", "")
+                        if error_desc:
+                            error_detail = f"{error_detail} - {error_desc}"
+                        if error_code:
+                            error_detail = f"{error_detail} (code: {error_code})"
+                    except:
+                        pass
+                last_error = f"네트워크 오류: {error_detail}"
                 logger.warning(f"{last_error} (시도 {attempt + 1}/{MAX_RETRIES})")
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(RETRY_DELAY)  # 2초 대기 후 재시도

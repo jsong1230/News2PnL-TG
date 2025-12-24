@@ -9,7 +9,7 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.config import validate_config, MONTH_OVERRIDE
+from src.config import validate_config, MONTH_OVERRIDE, TELEGRAM_REQUIRED
 from src.database import ensure_db
 from src.reports.monthly import generate_monthly_report
 from src.telegram import send_message, send_error_notification
@@ -43,7 +43,10 @@ def main():
             print("✓ 월간 리포트 전송 완료")
         else:
             print("✗ 월간 리포트 전송 실패")
-            sys.exit(1)
+            if TELEGRAM_REQUIRED:
+                sys.exit(1)
+            else:
+                print("⚠️  TELEGRAM_REQUIRED=false이므로 워크플로우는 계속 진행됩니다.")
     
     except Exception as e:
         error_msg = f"월간 리포트 생성 중 오류 발생: {e}\n{traceback.format_exc()}"
