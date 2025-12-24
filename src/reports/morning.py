@@ -258,6 +258,10 @@ def generate_morning_report() -> str:
                 display_url = url[:50]
             report += f"{i}. [{display_url}]({url})\n"
         report += "\n"
+    else:
+        # 근거 링크가 없을 때도 로그 출력
+        logger.warning("근거 링크가 없습니다 (sources가 비어있음)")
+        # 리포트에는 표시하지 않음 (깔끔하게)
     
     # 9. 관찰 종목 선정 및 리포트 추가
     try:

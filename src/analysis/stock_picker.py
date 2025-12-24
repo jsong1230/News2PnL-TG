@@ -611,21 +611,69 @@ def pick_watch_stocks(
             logger.warning(f"종목코드를 찾을 수 없음: {stock_name}")
             continue
         
-        # 관련 뉴스 찾기
+        # 관련 뉴스 찾기 (더 넓은 범위에서 검색)
         catalysts = []
+        
+        # 1. news_items에서 직접 매칭
         for item in news_items:
-            if stock_name in item.title or stock_name.lower() in item.title.lower():
+            title_lower = item.title.lower()
+            stock_lower = stock_name.lower()
+            if stock_lower in title_lower or stock_name in item.title:
                 catalysts.append(item.title)
                 if len(catalysts) >= 2:
                     break
         
-        # catalyst가 없으면 기본 메시지
-        if not catalysts:
-            catalysts = [f"{stock_name} 관련 뉴스"]
+        # 2. digest의 헤드라인에서도 찾기
+        if len(catalysts) < 2:
+            for headline in digest.top_headlines:
+                if stock_name.lower() in headline.lower() or stock_name in headline:
+                    if headline not in catalysts:
+                        catalysts.append(headline)
+                        if len(catalysts) >= 2:
+                            break
         
-        # thesis 생성
-        if catalysts:
-            thesis = f"{stock_name} 관련 뉴스로 인한 관찰 필요"
+        # 3. 섹터 bullets에서도 찾기
+        if len(catalysts) < 2:
+            for sector, bullets in digest.sector_bullets.items():
+                for bullet in bullets:
+                    if stock_name.lower() in bullet.lower() or stock_name in bullet:
+                        if bullet not in catalysts:
+                            catalysts.append(bullet)
+                            if len(catalysts) >= 2:
+                                break
+                if len(catalysts) >= 2:
+                    break
+        
+        # catalyst가 없으면 섹터 기반으로 생성
+        if not catalysts:
+            # 섹터 분류로 대체 메시지 생성
+            sector = None
+            for headline in digest.top_headlines[:5]:
+                sector = classify_sector(headline, "")
+                if sector and sector != "기타":
+                    break
+            
+            if sector:
+                catalysts = [f"{stock_name}, {sector} 섹터 동향"]
+            else:
+                catalysts = [f"{stock_name} 관련 시장 동향"]
+        
+        # thesis 생성 (더 구체적으로)
+        if catalysts and len(catalysts) > 0:
+            # 첫 번째 catalyst에서 핵심 키워드 추출
+            first_catalyst = catalysts[0]
+            # 간단한 요약 생성
+            if "실적" in first_catalyst or "수익" in first_catalyst or "성장" in first_catalyst:
+                thesis = f"{stock_name}, 실적/성장 관련 뉴스로 관찰 필요"
+            elif "AI" in first_catalyst or "반도체" in first_catalyst:
+                thesis = f"{stock_name}, AI/반도체 동향 관련 관찰 필요"
+            elif "전기차" in first_catalyst or "배터리" in first_catalyst:
+                thesis = f"{stock_name}, 전기차/배터리 동향 관련 관찰 필요"
+            elif "금리" in first_catalyst or "환율" in first_catalyst:
+                thesis = f"{stock_name}, 거시 환경 변화 관련 관찰 필요"
+            else:
+                # catalyst의 핵심 내용을 간단히 요약
+                thesis = f"{stock_name}, {first_catalyst[:30]}... 관련 관찰 필요"
         else:
             thesis = f"{stock_name} 섹터 동향 관찰"
         
