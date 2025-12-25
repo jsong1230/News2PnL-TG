@@ -6,7 +6,8 @@ from collections import defaultdict
 
 from src.config import (
     NEWS_PROVIDER, GOOGLE_NEWS_QUERY, GOOGLE_NEWS_QUERIES, GOOGLE_NEWS_MAX_PER_QUERY,
-    NEWS_WINDOW_MODE, DEFAULT_NEWS_QUERIES, LLM_ENABLED, LLM_MODEL
+    NEWS_WINDOW_MODE, DEFAULT_NEWS_QUERIES, LLM_ENABLED, LLM_MODEL, NEWS_DEBUG_TAGS,
+    OVERNIGHT_ENABLED, OVERNIGHT_DEBUG, OVERNIGHT_TICKERS
 )
 from src.news.provider import get_news_provider, DummyNewsProvider
 from src.news.base import NewsItem
@@ -15,6 +16,7 @@ from src.analysis.stock_picker import pick_watch_stocks, WatchStock
 from src.database import get_db_connection, upsert_symbol, upsert_recommendation
 from src.utils.disclaimer import append_disclaimer
 from src.utils.date_utils import get_kst_now, get_kst_date, get_news_window, KST
+from src.market.overnight import fetch_overnight_signals, assess_market_tone
 from pytz import UTC
 
 logger = logging.getLogger(__name__)
@@ -179,14 +181,30 @@ def generate_morning_report() -> str:
         reverse=True
     )
     
-    # 5. 다이제스트 생성
+    # 5. 오버나이트 선행 신호 수집 (다이제스트 생성 전에)
+    overnight_signals = None
+    if OVERNIGHT_ENABLED:
+        try:
+            from datetime import date as date_class
+            target_date = date_class.today()
+            overnight_signals = fetch_overnight_signals(
+                target_date=target_date,
+                provider="yahoo",
+                tickers=OVERNIGHT_TICKERS,
+                debug=OVERNIGHT_DEBUG
+            )
+        except Exception as e:
+            logger.warning(f"오버나이트 신호 수집 실패: {e}", exc_info=True)
+    
+    # 6. 다이제스트 생성 (오버나이트 신호 반영)
     digest = create_digest(
         time_filtered_items, 
         fetched_count=fetched_count,
-        time_filtered_count=time_filtered_count
+        time_filtered_count=time_filtered_count,
+        overnight_signals=overnight_signals
     )
     
-    # 6. 섹터별 분배 수 로깅
+    # 7. 섹터별 분배 수 로깅
     sector_counts = defaultdict(int)
     for item in time_filtered_items:
         from src.analysis.news_analyzer import classify_sector
@@ -195,11 +213,11 @@ def generate_morning_report() -> str:
     
     logger.info(f"섹터별 분배: {dict(sector_counts)}")
     
-    # 7. DB 저장 (향후 구현)
+    # 8. DB 저장 (향후 구현)
     # 실제로는 news, news_symbols 테이블에 저장
     # 나머지 링크는 DB에 저장만 하고 메시지에는 출력하지 않음
     
-    # 8. 리포트 생성
+    # 9. 리포트 생성
     mode_label = "운영" if window_mode == "strict" else "개발"
     report = f"*📰 오전 리포트 - {today}*\n\n"
     report += f"*수집 시간:* {datetime_str}\n"
@@ -225,13 +243,78 @@ def generate_morning_report() -> str:
     if digest.top_headlines:
         report += "*📌 핵심 헤드라인*\n"
         for i, headline in enumerate(digest.top_headlines[:8], 1):
-            report += f"{i}. {headline}\n"
+            # 디버그 태그 추가
+            tags = []
+            if NEWS_DEBUG_TAGS and digest.headline_debug is not None:
+                debug_info = digest.headline_debug.get(headline, {})
+                if debug_info.get("freshness_score", 0) > 0.7:
+                    tags.append("[FRESH]")
+                if debug_info.get("repeat_penalty", 0) > 0.3:
+                    tags.append("[REPEAT]")
+                if debug_info.get("late_penalty", 0) > 0.2:
+                    tags.append("[LATE?]")
+            
+            tag_str = " " + " ".join(tags) if tags else ""
+            report += f"{i}. {headline}{tag_str}\n"
         report += "\n"
     
     # 거시 요약
     if digest.macro_summary:
         report += "*📊 거시 요약*\n"
         report += f"{digest.macro_summary}\n\n"
+    
+    # 오버나이트 선행 신호 (이미 수집됨)
+    market_tone = None
+    if OVERNIGHT_ENABLED and overnight_signals:
+        market_tone = assess_market_tone(overnight_signals)
+            
+            if overnight_signals:
+                report += "*📈 Overnight Signals*\n"
+                # 성공한 신호만 표시
+                successful_signals = [
+                    (name, sig) for name, sig in overnight_signals.items()
+                    if sig.success and sig.pct_change is not None
+                ]
+                
+                if successful_signals:
+                    # 중요도 순으로 정렬 (Nasdaq, S&P500, NVDA, BTC, USDKRW 등)
+                    priority_order = ["Nasdaq", "S&P500", "NVDA", "BTC", "USDKRW", "US10Y", "EWY", "DXY"]
+                    sorted_signals = sorted(
+                        successful_signals,
+                        key=lambda x: (
+                            priority_order.index(x[0]) if x[0] in priority_order else 999,
+                            -abs(x[1].pct_change or 0)  # 변동률 큰 순
+                        )
+                    )
+                    
+                    for name, sig in sorted_signals[:8]:  # 최대 8개
+                        pct = sig.pct_change
+                        emoji = "📈" if pct > 0 else "📉" if pct < 0 else "➖"
+                        report += f"  {emoji} {name}: {pct:+.1f}%\n"
+                    
+                    # 시장 톤 요약
+                    tone_emoji = {
+                        "risk_on": "🟢",
+                        "risk_off": "🔴",
+                        "mixed": "🟡"
+                    }
+                    tone_label = {
+                        "risk_on": "Risk On",
+                        "risk_off": "Risk Off",
+                        "mixed": "Mixed"
+                    }
+                    report += f"\n*오늘의 톤: {tone_emoji.get(market_tone, '⚪')} {tone_label.get(market_tone, 'Unknown')}*\n\n"
+                else:
+                    report += "  (신호 수집 실패)\n\n"
+            else:
+                if OVERNIGHT_DEBUG:
+                    report += "*📈 Overnight Signals*\n"
+                    report += "  (신호 수집 실패)\n\n"
+        except Exception as e:
+            logger.warning(f"오버나이트 신호 수집 실패: {e}", exc_info=True)
+            if OVERNIGHT_DEBUG:
+                report += "*📈 Overnight Signals*\n"
+                report += f"  (오류: {str(e)})\n\n"
     
     # 섹터별 뉴스
     if digest.sector_bullets:
@@ -273,7 +356,13 @@ def generate_morning_report() -> str:
             logger.info("LLM 비활성화, 룰 기반 선정 사용")
             print("[LLM] 비활성화, 룰 기반 선정 사용")
         
-        watch_stocks = pick_watch_stocks(digest, time_filtered_items, max_count=3, date_str=today)
+        watch_stocks = pick_watch_stocks(
+            digest, 
+            time_filtered_items, 
+            max_count=3, 
+            date_str=today,
+            overnight_signals=overnight_signals
+        )
         
         if watch_stocks:
             report += "*👀 오늘의 관찰 리스트 (교육용 시뮬레이션)*\n\n"

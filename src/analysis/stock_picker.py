@@ -33,13 +33,18 @@ class WatchStock:
     confidence_reason: str  # 확신도 이유
 
 
-def extract_stock_candidates(digest: NewsDigest, news_items: List[NewsItem]) -> Dict[str, int]:
+def extract_stock_candidates(
+    digest: NewsDigest, 
+    news_items: List[NewsItem],
+    overnight_signals: Optional[Dict] = None
+) -> Dict[str, int]:
     """
     뉴스 다이제스트에서 종목 후보 추출 및 점수 계산
     
     Args:
         digest: 뉴스 다이제스트
         news_items: 뉴스 아이템 리스트
+        overnight_signals: 오버나이트 선행 신호 (선택사항)
     
     Returns:
         {종목명: 점수} 딕셔너리
@@ -91,6 +96,43 @@ def extract_stock_candidates(digest: NewsDigest, news_items: List[NewsItem]) -> 
                 if kr_name not in scores:
                     scores[kr_name] = 0
                 scores[kr_name] += 1  # 해외 종목 관련: +1
+    
+    # 오버나이트 선행 신호 기반 점수 조정
+    if overnight_signals:
+        # 반도체/AI 섹터: Nasdaq/NVDA 강하면 가점
+        nvda = overnight_signals.get("NVDA")
+        nasdaq = overnight_signals.get("Nasdaq")
+        
+        if nvda and nvda.success and nvda.pct_change:
+            if nvda.pct_change > 1.0:  # NVDA +1% 이상
+                for kr_name in ["삼성전자", "SK하이닉스"]:
+                    if kr_name not in scores:
+                        scores[kr_name] = 0
+                    scores[kr_name] += 2  # NVDA 강세: +2
+        
+        if nasdaq and nasdaq.success and nasdaq.pct_change:
+            if nasdaq.pct_change > 0.5:  # Nasdaq +0.5% 이상
+                for kr_name in ["삼성전자", "SK하이닉스"]:
+                    if kr_name not in scores:
+                        scores[kr_name] = 0
+                    scores[kr_name] += 1  # Nasdaq 강세: +1
+        
+        # 코인 관련: BTC 강하면 가점
+        btc = overnight_signals.get("BTC")
+        if btc and btc.success and btc.pct_change:
+            if btc.pct_change > 2.0:  # BTC +2% 이상
+                # 코인 관련 종목이 있으면 가점 (현재는 없지만 향후 확장 가능)
+                pass
+        
+        # Risk-off 환경: 고변동 종목 감점
+        from src.market.overnight import assess_market_tone
+        market_tone = assess_market_tone(overnight_signals)
+        if market_tone == "risk_off":
+            # 고변동 종목 감점 (예: 2차전지, 바이오 등)
+            high_volatility_stocks = ["LG에너지솔루션", "삼성SDI", "셀트리온"]
+            for stock_name in high_volatility_stocks:
+                if stock_name in scores:
+                    scores[stock_name] = max(0, scores[stock_name] - 1)  # -1 감점
     
     return scores
 
@@ -204,7 +246,8 @@ def generate_trigger(stock_name: str) -> str:
 def create_stock_candidates(
     digest: NewsDigest,
     news_items: List[NewsItem],
-    max_candidates: int = 15
+    max_candidates: int = 15,
+    overnight_signals: Optional[Dict] = None
 ) -> List[Dict[str, Any]]:
     """
     LLM 입력을 위한 후보 종목 리스트 생성 (8~15개)
@@ -213,12 +256,13 @@ def create_stock_candidates(
         digest: 뉴스 다이제스트
         news_items: 뉴스 아이템 리스트
         max_candidates: 최대 후보 수
+        overnight_signals: 오버나이트 선행 신호 (선택사항)
     
     Returns:
         후보 종목 리스트 [{name, code, score, matched_headlines, sector}]
     """
     # 1. 후보 종목 추출 및 점수 계산
-    candidate_scores = extract_stock_candidates(digest, news_items)
+    candidate_scores = extract_stock_candidates(digest, news_items, overnight_signals=overnight_signals)
     
     if not candidate_scores:
         # 후보가 없으면 섹터 대표주로 fallback
@@ -542,7 +586,8 @@ def pick_watch_stocks(
     digest: NewsDigest,
     news_items: List[NewsItem],
     max_count: int = 3,
-    date_str: Optional[str] = None
+    date_str: Optional[str] = None,
+    overnight_signals: Optional[Dict] = None
 ) -> List[WatchStock]:
     """
     관찰 종목 선정 (LLM 지원)
@@ -552,12 +597,13 @@ def pick_watch_stocks(
         news_items: 뉴스 아이템 리스트
         max_count: 최대 선정 개수 (기본 3개)
         date_str: 날짜 문자열 (YYYY-MM-DD, LLM 사용 시 필요)
+        overnight_signals: 오버나이트 선행 신호 (선택사항)
     
     Returns:
         관찰 종목 리스트
     """
     # 1. 후보 종목 생성 (8~15개)
-    candidates = create_stock_candidates(digest, news_items, max_candidates=15)
+    candidates = create_stock_candidates(digest, news_items, max_candidates=15, overnight_signals=overnight_signals)
     
     if not candidates:
         logger.warning("종목 후보가 없습니다")

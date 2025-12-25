@@ -1,9 +1,12 @@
 """뉴스 분석 및 다이제스트 생성 모듈"""
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import re
 import logging
 from collections import defaultdict
+from datetime import datetime, timedelta
+from difflib import SequenceMatcher
+from pytz import UTC
 
 from src.news.base import NewsItem
 from src.analysis.sector_keywords import SECTOR_KEYWORDS
@@ -22,6 +25,7 @@ class NewsDigest:
     fetched_count: int  # 수집된 총 기사 수
     time_filtered_count: int  # 시간 필터 후 기사 수
     deduped_count: int  # 중복 제거 후 기사 수
+    headline_debug: Optional[Dict[str, Dict[str, float]]] = None  # 헤드라인별 디버그 정보 (제목 -> 디버그 딕셔너리)
 
 
 # 노이즈 필터 키워드
@@ -67,6 +71,23 @@ MARKET_KEYWORDS = {
     # 지정학/방산 (가중치 7)
     "지정학": 7, "전쟁": 7, "방산": 7, "방위": 7,
 }
+
+# 클릭베이트 키워드 (감점 대상)
+CLICKBAIT_KEYWORDS = [
+    "폭발", "대박", "지금 담아라", "100조", "3배", "확정", "급등 예상", "급락 예상",
+    "반드시", "확실히", "100%", "무조건", "절대", "완전", "엄청", "엄청난",
+    "충격", "충격적", "폭락 예고", "폭등 예고", "급등장", "급락장", "대폭",
+    "역대급", "최고", "최대", "최악", "최저", "신기록", "역사적"
+]
+
+# 신뢰성 높은 출처 도메인 (클릭베이트 감점 완화)
+CREDIBLE_DOMAINS = [
+    "bloomberg.com", "reuters.com", "wsj.com", "ft.com", "economist.com",
+    "yna.co.kr", "yna.kr", "yna.com",  # 연합뉴스
+    "yna.co.kr", "yna.kr", "yna.com",  # 연합뉴스
+    "chosun.com", "joongang.co.kr", "donga.com", "hani.co.kr",  # 한국 언론
+    "mk.co.kr", "etnews.com", "fnnews.com", "edaily.co.kr"  # 경제 전문지
+]
 
 
 def normalize_title(title: str) -> str:
@@ -116,41 +137,298 @@ def is_noise_article(title: str, source: str = "", url: str = "") -> bool:
     return False
 
 
-def score_headline(item: NewsItem) -> float:
+def calculate_freshness_score(item: NewsItem, now_utc: Optional[datetime] = None) -> float:
     """
-    헤드라인 시장 관련도 점수 계산
+    신선도 점수 계산 (기사 시각 기반 감쇠)
+    
+    Args:
+        item: 뉴스 아이템
+        now_utc: 현재 시각 (UTC, None이면 현재 시각 사용)
+    
+    Returns:
+        신선도 점수 (0.0 ~ 1.0, 높을수록 최근)
+    """
+    if not item.published_at:
+        return 0.5  # 날짜 없으면 중간값
+    
+    if now_utc is None:
+        now_utc = datetime.now(UTC)
+    
+    item_utc = item.published_at
+    if item_utc.tzinfo != UTC:
+        item_utc = item_utc.astimezone(UTC)
+    
+    hours_ago = (now_utc - item_utc).total_seconds() / 3600
+    
+    # 감쇠 함수: 0시간=1.0, 12시간=0.5, 24시간=0.2, 48시간=0.05
+    if hours_ago <= 0:
+        return 1.0
+    elif hours_ago <= 12:
+        # 0~12시간: 선형 감쇠 1.0 -> 0.5
+        return 1.0 - (hours_ago / 12) * 0.5
+    elif hours_ago <= 24:
+        # 12~24시간: 선형 감쇠 0.5 -> 0.2
+        return 0.5 - ((hours_ago - 12) / 12) * 0.3
+    elif hours_ago <= 48:
+        # 24~48시간: 선형 감쇠 0.2 -> 0.05
+        return 0.2 - ((hours_ago - 24) / 24) * 0.15
+    else:
+        # 48시간 이상: 0.05 고정
+        return 0.05
+
+
+def calculate_novelty_score(
+    item: NewsItem,
+    other_items: List[NewsItem],
+    now_utc: Optional[datetime] = None
+) -> Tuple[float, float]:
+    """
+    새로움 점수 및 반복 페널티 계산
+    
+    Args:
+        item: 현재 뉴스 아이템
+        other_items: 다른 뉴스 아이템 리스트 (비교 대상)
+        now_utc: 현재 시각 (UTC, None이면 현재 시각 사용)
+    
+    Returns:
+        (novelty_score, repeat_penalty) 튜플
+        - novelty_score: 0.0 ~ 1.0 (높을수록 새로움)
+        - repeat_penalty: 0.0 ~ 1.0 (높을수록 반복 심함)
+    """
+    if not item.published_at:
+        return (0.5, 0.0)  # 날짜 없으면 중간값
+    
+    if now_utc is None:
+        now_utc = datetime.now(UTC)
+    
+    item_utc = item.published_at
+    if item_utc.tzinfo != UTC:
+        item_utc = item_utc.astimezone(UTC)
+    
+    item_normalized = normalize_title(item.title)
+    
+    # 24~72시간 내 유사한 제목 찾기
+    similar_count = 0
+    similar_items = []
+    
+    for other in other_items:
+        if other == item or not other.published_at:
+            continue
+        
+        other_utc = other.published_at
+        if other_utc.tzinfo != UTC:
+            other_utc = other_utc.astimezone(UTC)
+        
+        hours_diff = abs((item_utc - other_utc).total_seconds() / 3600)
+        
+        # 24~72시간 범위 내만 체크
+        if 24 <= hours_diff <= 72:
+            other_normalized = normalize_title(other.title)
+            
+            # Jaccard 유사도와 SequenceMatcher 유사도 중 높은 값 사용
+            jaccard_sim = jaccard_similarity(item_normalized, other_normalized)
+            seq_sim = SequenceMatcher(None, item_normalized, other_normalized).ratio()
+            similarity = max(jaccard_sim, seq_sim)
+            
+            # 유사도 임계값: 0.4 이상이면 유사한 것으로 간주
+            if similarity >= 0.4:
+                similar_count += 1
+                similar_items.append((other, similarity))
+    
+    # Novelty score: 유사한 기사가 적을수록 높음
+    if similar_count == 0:
+        novelty_score = 1.0
+    elif similar_count <= 2:
+        novelty_score = 0.7
+    elif similar_count <= 4:
+        novelty_score = 0.4
+    else:
+        novelty_score = 0.1
+    
+    # Repeat penalty: 같은 이슈가 5개 이상이면 강하게 감점
+    if similar_count >= 5:
+        repeat_penalty = 0.8
+    elif similar_count >= 3:
+        repeat_penalty = 0.5
+    elif similar_count >= 1:
+        repeat_penalty = 0.2
+    else:
+        repeat_penalty = 0.0
+    
+    return (novelty_score, repeat_penalty)
+
+
+def calculate_late_news_penalty(
+    item: NewsItem,
+    sector: str,
+    overnight_signals: Optional[Dict] = None
+) -> float:
+    """
+    늦은 뉴스 페널티 계산 (선행지표 변동 기반)
+    
+    Args:
+        item: 뉴스 아이템
+        sector: 섹터명
+        overnight_signals: 오버나이트 선행 신호 (선택사항)
+    
+    Returns:
+        늦은 뉴스 페널티 (0.0 ~ 1.0, 높을수록 이미 반영됨)
+    """
+    if not overnight_signals:
+        return 0.0
+    
+    # 섹터별 선행지표 매핑
+    sector_indicators = {
+        "반도체/AI": ["NVDA", "Nasdaq"],
+        "코인/크립토": ["BTC"],
+        "거시/금리/달러": ["USDKRW", "US10Y", "DXY"],
+    }
+    
+    if sector not in sector_indicators:
+        return 0.0
+    
+    # 해당 섹터의 선행지표들 확인
+    indicators = sector_indicators[sector]
+    max_change = 0.0
+    
+    for indicator_name in indicators:
+        signal = overnight_signals.get(indicator_name)
+        if signal and signal.success and signal.pct_change is not None:
+            abs_change = abs(signal.pct_change)
+            max_change = max(max_change, abs_change)
+    
+    # 선행지표가 크게 움직였으면 late penalty 증가
+    if max_change > 3.0:  # 3% 이상 변동
+        return 0.7
+    elif max_change > 2.0:  # 2% 이상 변동
+        return 0.5
+    elif max_change > 1.0:  # 1% 이상 변동
+        return 0.3
+    else:
+        return 0.0
+
+
+def calculate_clickbait_penalty(item: NewsItem) -> float:
+    """
+    클릭베이트 페널티 계산
     
     Args:
         item: 뉴스 아이템
     
     Returns:
-        점수 (높을수록 시장 관련도 높음)
+        클릭베이트 페널티 (0.0 ~ 1.0, 높을수록 자극적)
     """
     text = (item.title + " " + (item.content or "")).lower()
     
-    score = 0.0
+    # 클릭베이트 키워드 체크
+    clickbait_count = 0
+    for keyword in CLICKBAIT_KEYWORDS:
+        if keyword in text:
+            clickbait_count += 1
     
-    # 시장 관련도 키워드 매칭
+    # 신뢰성 높은 출처는 감점 완화
+    is_credible = False
+    if item.url:
+        url_lower = item.url.lower()
+        for domain in CREDIBLE_DOMAINS:
+            if domain in url_lower:
+                is_credible = True
+                break
+    
+    if item.source:
+        source_lower = item.source.lower()
+        for domain in CREDIBLE_DOMAINS:
+            if domain in source_lower:
+                is_credible = True
+                break
+    
+    # 페널티 계산
+    if clickbait_count == 0:
+        penalty = 0.0
+    elif clickbait_count == 1:
+        penalty = 0.3 if not is_credible else 0.1
+    elif clickbait_count == 2:
+        penalty = 0.6 if not is_credible else 0.3
+    else:
+        penalty = 0.9 if not is_credible else 0.5
+    
+    return penalty
+
+
+def score_headline(
+    item: NewsItem,
+    all_items: Optional[List[NewsItem]] = None,
+    now_utc: Optional[datetime] = None,
+    overnight_signals: Optional[Dict] = None
+) -> Tuple[float, Dict[str, float]]:
+    """
+    헤드라인 종합 점수 계산 (신선도/새로움/늦은뉴스/클릭베이트 반영)
+    
+    Args:
+        item: 뉴스 아이템
+        all_items: 전체 뉴스 아이템 리스트 (novelty 계산용, None이면 빈 리스트 사용)
+        now_utc: 현재 시각 (UTC, None이면 현재 시각 사용)
+    
+    Returns:
+        (최종 점수, 디버그 정보 딕셔너리) 튜플
+    """
+    if all_items is None:
+        all_items = []
+    
+    if now_utc is None:
+        now_utc = datetime.now(UTC)
+    
+    text = (item.title + " " + (item.content or "")).lower()
+    
+    # 1. 기본 관련도 점수 (기존 로직)
+    base_relevance = 0.0
     for keyword, weight in MARKET_KEYWORDS.items():
         if keyword in text:
-            score += weight
+            base_relevance += weight
     
-    # published_at이 최신일수록 보너스 (최근 6시간 이내면 +5)
-    if item.published_at:
-        from datetime import datetime, timedelta
-        from pytz import UTC
-        now_utc = datetime.now(UTC)
-        item_utc = item.published_at
-        if item_utc.tzinfo != UTC:
-            item_utc = item_utc.astimezone(UTC)
-        
-        hours_ago = (now_utc - item_utc).total_seconds() / 3600
-        if hours_ago <= 6:
-            score += 5
-        elif hours_ago <= 12:
-            score += 2
+    # 2. Freshness score
+    freshness_score = calculate_freshness_score(item, now_utc)
     
-    return score
+    # 3. Novelty / Repeat penalty
+    novelty_score, repeat_penalty = calculate_novelty_score(item, all_items, now_utc)
+    
+    # 4. Late-news penalty
+    sector = classify_sector(item.title, item.content or "")
+    late_penalty = calculate_late_news_penalty(item, sector, overnight_signals=overnight_signals)
+    
+    # 5. Clickbait penalty
+    clickbait_penalty = calculate_clickbait_penalty(item)
+    
+    # 6. 최종 점수 계산 (가중치 적용)
+    # 가중치 설정 (환경변수로 조정 가능하도록 향후 개선)
+    w_fresh = 10.0  # 신선도 가중치
+    w_novel = 5.0   # 새로움 가중치
+    w_repeat = 8.0  # 반복 페널티 가중치
+    w_late = 6.0    # 늦은뉴스 페널티 가중치
+    w_click = 4.0   # 클릭베이트 페널티 가중치
+    
+    final_score = (
+        base_relevance
+        + w_fresh * freshness_score
+        + w_novel * novelty_score
+        - w_repeat * repeat_penalty
+        - w_late * late_penalty
+        - w_click * clickbait_penalty
+    )
+    
+    # 디버그 정보
+    debug_info = {
+        "base_relevance": base_relevance,
+        "freshness_score": freshness_score,
+        "novelty_score": novelty_score,
+        "repeat_penalty": repeat_penalty,
+        "late_penalty": late_penalty,
+        "clickbait_penalty": clickbait_penalty,
+        "final_score": final_score,
+        "sector": sector
+    }
+    
+    return (final_score, debug_info)
 
 
 def remove_duplicates(news_items: List[NewsItem], 
@@ -364,7 +642,8 @@ def assess_korea_impact(news_items: List[NewsItem]) -> tuple[str, str]:
 
 def create_digest(news_items: List[NewsItem], 
                   fetched_count: int = 0,
-                  time_filtered_count: int = 0) -> NewsDigest:
+                  time_filtered_count: int = 0,
+                  overnight_signals: Optional[Dict] = None) -> NewsDigest:
     """
     뉴스 다이제스트 생성 (노이즈 필터 + 랭킹 적용)
     
@@ -385,7 +664,8 @@ def create_digest(news_items: List[NewsItem],
             sources=[],
             fetched_count=fetched_count,
             time_filtered_count=time_filtered_count,
-            deduped_count=0
+            deduped_count=0,
+            headline_debug={}
         )
     
     # 1. 중복 제거
@@ -411,13 +691,26 @@ def create_digest(news_items: List[NewsItem],
         logger.warning(f"노이즈 필터 후 후보가 {len(filtered_news)}개로 부족, 일부 복구")
         # 노이즈 제외된 항목 중 일부 복구 (점수 높은 것부터)
         noise_items = [item for item in unique_news if is_noise_article(item.title, item.source or "", item.url)]
-        noise_items.sort(key=score_headline, reverse=True)
+        # score_headline이 튜플을 반환하므로 첫 번째 요소(점수)로 정렬
+        now_utc_temp = datetime.now(UTC)
+        noise_items_with_scores = [
+            (item, score_headline(item, unique_news, now_utc_temp, overnight_signals=overnight_signals)[0]) 
+            for item in noise_items
+        ]
+        noise_items_with_scores.sort(key=lambda x: x[1], reverse=True)
         # 상위 5개만 복구
-        filtered_news.extend(noise_items[:5])
+        filtered_news.extend([item for item, _ in noise_items_with_scores[:5]])
         logger.info(f"노이즈 항목 {min(5, len(noise_items))}개 복구")
     
-    # 3. 시장 관련도 점수 계산 및 정렬
-    scored_news = [(item, score_headline(item)) for item in filtered_news]
+    # 3. 시장 관련도 점수 계산 및 정렬 (전체 unique_news를 비교 대상으로 전달)
+    now_utc = datetime.now(UTC)
+    scored_news = []
+    headline_debug = {}
+    for item in filtered_news:
+        score, debug_info = score_headline(item, unique_news, now_utc, overnight_signals=overnight_signals)
+        scored_news.append((item, score))
+        headline_debug[item.title] = debug_info
+    
     scored_news.sort(key=lambda x: x[1], reverse=True)
     
     # 4. 섹터 다양성 보정 (한 섹터 최대 3개)
@@ -496,5 +789,6 @@ def create_digest(news_items: List[NewsItem],
         sources=sources,
         fetched_count=fetched_count,
         time_filtered_count=time_filtered_count,
-        deduped_count=after_dedup
+        deduped_count=after_dedup,
+        headline_debug=headline_debug
     )

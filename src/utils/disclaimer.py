@@ -16,3 +16,5 @@ def append_disclaimer(text: str) -> str:
     """텍스트에 면책 문구 추가"""
     return text + "\n\n" + get_disclaimer()
 
+
+

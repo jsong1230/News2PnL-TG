@@ -1,7 +1,11 @@
 """설정 관리 모듈"""
 import os
+import json
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # .env 파일 로드
 env_path = Path(__file__).parent.parent / ".env"
@@ -69,6 +73,24 @@ LLM_DAILY_BUDGET_TOKENS = int(os.getenv("LLM_DAILY_BUDGET_TOKENS", "20000"))
 # 하위 호환성: LLM_API_KEY도 지원
 if not OPENAI_API_KEY:
     OPENAI_API_KEY = os.getenv("LLM_API_KEY", "")
+
+# 뉴스 디버그 태그 표시 여부 (기본: false)
+NEWS_DEBUG_TAGS = os.getenv("NEWS_DEBUG_TAGS", "false").lower() == "true"
+
+# 오버나이트 선행 신호 설정
+OVERNIGHT_ENABLED = os.getenv("OVERNIGHT_ENABLED", "true").lower() == "true"
+OVERNIGHT_DEBUG = os.getenv("OVERNIGHT_DEBUG", "false").lower() == "true"
+
+# 오버나이트 티커 매핑 (JSON 형식, 선택사항)
+OVERNIGHT_TICKERS_JSON = os.getenv("OVERNIGHT_TICKERS_JSON", "").strip()
+if OVERNIGHT_TICKERS_JSON:
+    try:
+        OVERNIGHT_TICKERS = json.loads(OVERNIGHT_TICKERS_JSON)
+    except json.JSONDecodeError:
+        logger.warning("OVERNIGHT_TICKERS_JSON 파싱 실패, 기본값 사용")
+        OVERNIGHT_TICKERS = None
+else:
+    OVERNIGHT_TICKERS = None
 
 # DB 경로
 DB_PATH = Path(__file__).parent.parent / "db" / "market.db"

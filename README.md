@@ -10,10 +10,11 @@ News2PnL-TG는 **뉴스 기반 주식 관찰 리스트**를 자동으로 생성�
 
 #### 1. **오전 리포트 (08:00 KST)**
 매일 아침, 지난밤 주요 뉴스를 수집하고 분석하여:
-- 📰 **핵심 헤드라인 8개**: 시장에 영향을 미치는 주요 뉴스
+- 📈 **Overnight Signals**: 한국장 개장 전 선행 신호 (Nasdaq, S&P500, NVDA, BTC, USDKRW 등)
+- 📰 **핵심 헤드라인 8개**: 시장에 영향을 미치는 주요 뉴스 (신선도/새로움 기반 선정)
 - 📊 **거시 요약**: 금리, 환율, 원유 등 거시 경제 동향
 - 🏷️ **섹터별 뉴스**: 반도체/AI, 2차전지, 바이오 등 섹터별 주요 소식
-- 👀 **오늘의 관찰 리스트 1~3개**: 뉴스 기반으로 선정된 종목과 관찰 이유
+- 👀 **오늘의 관찰 리스트 1~3개**: 뉴스 + 선행 신호 기반으로 선정된 종목과 관찰 이유
 
 **예시:**
 ```
@@ -380,6 +381,10 @@ GitHub Actions의 cron은 **UTC 기준**입니다. 한국 시간(KST)과의 변�
 | `LLM_MAX_TOKENS` | `800` | 최대 토큰 수 |
 | `LLM_TEMPERATURE` | `0.2` | 온도 (0.0~1.0) |
 | `LLM_DAILY_BUDGET_TOKENS` | `20000` | 일일 토큰 예산 |
+| `NEWS_DEBUG_TAGS` | `false` | 뉴스 헤드라인에 디버그 태그 표시 ([FRESH], [REPEAT], [LATE?]) |
+| `OVERNIGHT_ENABLED` | `true` | 오버나이트 선행 신호 수집 여부 |
+| `OVERNIGHT_DEBUG` | `false` | 오버나이트 신호 디버그 모드 |
+| `OVERNIGHT_TICKERS_JSON` | - | 오버나이트 티커 매핑 (JSON 형식, 선택사항) |
 
 **개발/디버그용 환경변수** (로컬 실행 시):
 
@@ -389,6 +394,7 @@ GitHub Actions의 cron은 **UTC 기준**입니다. 한국 시간(KST)과의 변�
 | `NEWS_LOOKBACK_HOURS` | `now` 모드에서 lookback 시간 (시간 단위) | `24` |
 | `MONTH_OVERRIDE` | 특정 월 리포트 생성 (YYYY-MM 형식) | `2025-12` |
 | `MONTHLY_INCLUDE_DUMMY` | 월간 리포트에 dummy provider 거래 포함 | `true` |
+| `NEWS_DEBUG_TAGS` | 뉴스 헤드라인에 디버그 태그 표시 | `true` |
 
 ### 5. 수동 실행
 
