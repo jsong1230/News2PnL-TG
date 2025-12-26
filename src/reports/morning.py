@@ -266,50 +266,45 @@ def generate_morning_report() -> str:
     # 오버나이트 선행 신호 (이미 수집됨)
     market_tone = None
     if OVERNIGHT_ENABLED and overnight_signals:
-        market_tone = assess_market_tone(overnight_signals)
+        try:
+            market_tone = assess_market_tone(overnight_signals)
+            report += "*📈 Overnight Signals*\n"
+            # 성공한 신호만 표시
+            successful_signals = [
+                (name, sig) for name, sig in overnight_signals.items()
+                if sig.success and sig.pct_change is not None
+            ]
             
-            if overnight_signals:
-                report += "*📈 Overnight Signals*\n"
-                # 성공한 신호만 표시
-                successful_signals = [
-                    (name, sig) for name, sig in overnight_signals.items()
-                    if sig.success and sig.pct_change is not None
-                ]
-                
-                if successful_signals:
-                    # 중요도 순으로 정렬 (Nasdaq, S&P500, NVDA, BTC, USDKRW 등)
-                    priority_order = ["Nasdaq", "S&P500", "NVDA", "BTC", "USDKRW", "US10Y", "EWY", "DXY"]
-                    sorted_signals = sorted(
-                        successful_signals,
-                        key=lambda x: (
-                            priority_order.index(x[0]) if x[0] in priority_order else 999,
-                            -abs(x[1].pct_change or 0)  # 변동률 큰 순
-                        )
+            if successful_signals:
+                # 중요도 순으로 정렬 (Nasdaq, S&P500, NVDA, BTC, USDKRW 등)
+                priority_order = ["Nasdaq", "S&P500", "NVDA", "BTC", "USDKRW", "US10Y", "EWY", "DXY"]
+                sorted_signals = sorted(
+                    successful_signals,
+                    key=lambda x: (
+                        priority_order.index(x[0]) if x[0] in priority_order else 999,
+                        -abs(x[1].pct_change or 0)  # 변동률 큰 순
                     )
-                    
-                    for name, sig in sorted_signals[:8]:  # 최대 8개
-                        pct = sig.pct_change
-                        emoji = "📈" if pct > 0 else "📉" if pct < 0 else "➖"
-                        report += f"  {emoji} {name}: {pct:+.1f}%\n"
-                    
-                    # 시장 톤 요약
-                    tone_emoji = {
-                        "risk_on": "🟢",
-                        "risk_off": "🔴",
-                        "mixed": "🟡"
-                    }
-                    tone_label = {
-                        "risk_on": "Risk On",
-                        "risk_off": "Risk Off",
-                        "mixed": "Mixed"
-                    }
-                    report += f"\n*오늘의 톤: {tone_emoji.get(market_tone, '⚪')} {tone_label.get(market_tone, 'Unknown')}*\n\n"
-                else:
-                    report += "  (신호 수집 실패)\n\n"
+                )
+                
+                for name, sig in sorted_signals[:8]:  # 최대 8개
+                    pct = sig.pct_change
+                    emoji = "📈" if pct > 0 else "📉" if pct < 0 else "➖"
+                    report += f"  {emoji} {name}: {pct:+.1f}%\n"
+                
+                # 시장 톤 요약
+                tone_emoji = {
+                    "risk_on": "🟢",
+                    "risk_off": "🔴",
+                    "mixed": "🟡"
+                }
+                tone_label = {
+                    "risk_on": "Risk On",
+                    "risk_off": "Risk Off",
+                    "mixed": "Mixed"
+                }
+                report += f"\n*오늘의 톤: {tone_emoji.get(market_tone, '⚪')} {tone_label.get(market_tone, 'Unknown')}*\n\n"
             else:
-                if OVERNIGHT_DEBUG:
-                    report += "*📈 Overnight Signals*\n"
-                    report += "  (신호 수집 실패)\n\n"
+                report += "  (신호 수집 실패)\n\n"
         except Exception as e:
             logger.warning(f"오버나이트 신호 수집 실패: {e}", exc_info=True)
             if OVERNIGHT_DEBUG:
