@@ -105,10 +105,17 @@ def fetch_financial_metrics(
         # 성공 여부 판단 (최소한 하나의 지표라도 있으면 성공)
         if metrics.per is not None or metrics.debt_ratio is not None or metrics.revenue_growth_3y is not None:
             metrics.success = True
-            logger.info(f"{stock_name} ({symbol_code}): 재무 데이터 수집 성공 - PER={metrics.per}, 부채비율={metrics.debt_ratio}%, 성장률={metrics.revenue_growth_3y}%")
+            per_str = f"PER={metrics.per:.2f}" if metrics.per else "PER=None"
+            debt_str = f"부채비율={metrics.debt_ratio:.1f}%" if metrics.debt_ratio else "부채비율=None"
+            growth_str = f"성장률={metrics.revenue_growth_3y:.1f}%" if metrics.revenue_growth_3y else f"성장률={metrics.earnings_growth_3y:.1f}%" if metrics.earnings_growth_3y else "성장률=None"
+            logger.info(f"{stock_name} ({symbol_code}): 재무 데이터 수집 성공 - {per_str}, {debt_str}, {growth_str}")
         else:
             metrics.error = "재무 지표 데이터 없음"
-            logger.warning(f"{stock_name} ({symbol_code}): 재무 지표 데이터 없음 (info keys: {list(info.keys())[:10] if info else 'None'})")
+            if info:
+                available_keys = [k for k in ["trailingPE", "forwardPE", "debtToEquity", "revenueGrowth", "earningsGrowth"] if k in info]
+                logger.warning(f"{stock_name} ({symbol_code}): 재무 지표 데이터 없음 (사용 가능한 키: {available_keys}, 전체 키 수: {len(info)})")
+            else:
+                logger.warning(f"{stock_name} ({symbol_code}): 재무 지표 데이터 없음 (info가 None)")
     
     except Exception as e:
         metrics.error = str(e)

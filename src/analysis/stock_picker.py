@@ -158,6 +158,7 @@ def calculate_checklist_score(
     
     # 재무 데이터가 있으면 사용, 없으면 기본값
     if financial_metrics and financial_metrics.success:
+        logger.info(f"{stock_name}: 재무 데이터 기반 점수 계산 시작 - PER={financial_metrics.per}, 부채비율={financial_metrics.debt_ratio}%")
         scores = calculate_checklist_scores_from_metrics(
             financial_metrics, 
             has_catalyst, 
@@ -172,7 +173,12 @@ def calculate_checklist_score(
             "부채비율 100% 이하": scores.get("debt_lt_100", 1),
             "살 이유 명확": scores.get("clear_reason", 1)
         }
+        logger.info(f"{stock_name}: 재무 데이터 기반 점수 계산 완료 - 총점={sum(scores_kr.values())}/12")
     else:
+        if financial_metrics:
+            logger.debug(f"{stock_name}: 재무 데이터 있지만 success=False, 기본값 사용")
+        else:
+            logger.debug(f"{stock_name}: 재무 데이터 없음, 기본값 사용")
         # 재무 데이터 없으면 기본값 사용
         scores_kr = {}
         
@@ -350,19 +356,30 @@ def create_stock_candidates(
         except Exception as e:
             logger.warning(f"{stock_name} ({code}): 재무 데이터 수집 예외 발생: {e}")
         
+        # 재무 데이터 딕셔너리 생성 (항상 포함, success=False일 수도 있음)
+        financial_metrics_dict = None
+        if financial_metrics:
+            financial_metrics_dict = {
+                "per": financial_metrics.per if financial_metrics.success else None,
+                "debt_ratio": financial_metrics.debt_ratio if financial_metrics.success else None,
+                "revenue_growth_3y": financial_metrics.revenue_growth_3y if financial_metrics.success else None,
+                "earnings_growth_3y": financial_metrics.earnings_growth_3y if financial_metrics.success else None,
+                "success": financial_metrics.success
+            }
+            if financial_metrics.success:
+                logger.info(f"{stock_name} ({code}): candidates에 재무 데이터 포함 - PER={financial_metrics.per}, 부채비율={financial_metrics.debt_ratio}%")
+            else:
+                logger.debug(f"{stock_name} ({code}): 재무 데이터 수집 실패로 candidates에 포함 안 됨 - {financial_metrics.error}")
+        else:
+            logger.debug(f"{stock_name} ({code}): 재무 데이터가 None (예외 발생)")
+        
         candidates.append({
             "name": stock_name,
             "code": code,
             "score": score,
             "matched_headlines": matched_headlines[:3],
             "sector": sector,
-            "financial_metrics": {
-                "per": financial_metrics.per if financial_metrics and financial_metrics.success else None,
-                "debt_ratio": financial_metrics.debt_ratio if financial_metrics and financial_metrics.success else None,
-                "revenue_growth_3y": financial_metrics.revenue_growth_3y if financial_metrics and financial_metrics.success else None,
-                "earnings_growth_3y": financial_metrics.earnings_growth_3y if financial_metrics and financial_metrics.success else None,
-                "success": financial_metrics.success if financial_metrics else False
-            } if financial_metrics else None
+            "financial_metrics": financial_metrics_dict
         })
         
         if len(candidates) >= max_candidates:
@@ -876,11 +893,11 @@ def pick_watch_stocks(
         # 재무 데이터 가져오기 (candidates에서)
         financial_metrics = None
         for candidate in candidates:
-            if candidate["name"] == stock_name and candidate.get("financial_metrics"):
-                # financial_metrics 딕셔너리를 FinancialMetrics 객체로 변환
-                from src.market.financial import FinancialMetrics
-                fm_dict = candidate["financial_metrics"]
+            if candidate["name"] == stock_name:
+                fm_dict = candidate.get("financial_metrics")
                 if fm_dict and fm_dict.get("success"):
+                    # financial_metrics 딕셔너리를 FinancialMetrics 객체로 변환
+                    from src.market.financial import FinancialMetrics
                     financial_metrics = FinancialMetrics(
                         symbol=code,
                         name=stock_name,
@@ -891,6 +908,10 @@ def pick_watch_stocks(
                         success=True
                     )
                     logger.info(f"{stock_name} ({code}): 룰 기반에서 재무 데이터 사용 - PER={financial_metrics.per}, 부채비율={financial_metrics.debt_ratio}%")
+                elif fm_dict:
+                    logger.debug(f"{stock_name} ({code}): candidates에 재무 데이터 있지만 success=False - {fm_dict}")
+                else:
+                    logger.debug(f"{stock_name} ({code}): candidates에 재무 데이터 없음")
                 break
         
         # 체크리스트 점수 계산 (재무 데이터 포함)
