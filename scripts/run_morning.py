@@ -14,12 +14,14 @@ from src.database import ensure_db
 from src.reports.morning import generate_morning_report
 from src.telegram import send_message, send_error_notification
 from src.utils.date_utils import get_kst_now, get_news_window
+from src.utils.logging import setup_logging, track_performance, PerformanceTracker
 
 
 def main():
     """메인 실행 함수"""
     try:
-        # 1. 설정 로딩 및 검증
+        # 1. 로깅 초기화 및 설정 검증
+        setup_logging()
         validate_config()
         
         # 2. DB 연결/초기화
@@ -35,7 +37,8 @@ def main():
         print(f"end_dt={end_dt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         
         # 4. 리포트 생성
-        report = generate_morning_report()
+        with track_performance("generate_morning_report"):
+            report = generate_morning_report()
         
         # 5. 리포트에서 카운트 정보 추출 (로컬 검증용)
         # 리포트에서 "수집: X건 → 시간필터: Y건 → 중복제거: Z건" 패턴 찾기
@@ -48,7 +51,11 @@ def main():
             print(f"fetched={fetched} time_filtered={time_filtered} deduped={deduped}")
         
         # 6. 텔레그램 전송
-        success = send_message(report)
+        with track_performance("send_telegram"):
+            success = send_message(report)
+        
+        # 7. 성능 요약 출력
+        print(PerformanceTracker().get_summary())
         
         if success:
             print("✓ 오전 리포트 전송 완료")

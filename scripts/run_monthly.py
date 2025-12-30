@@ -14,6 +14,7 @@ from src.database import ensure_db
 from src.reports.monthly import generate_monthly_report
 from src.telegram import send_message, send_error_notification
 from src.utils.date_utils import is_month_end
+from src.utils.logging import setup_logging, track_performance, PerformanceTracker
 
 
 def main():
@@ -25,7 +26,8 @@ def main():
             print("개발용으로 MONTH_OVERRIDE=YYYY-MM 환경변수를 설정하면 언제든 실행 가능합니다.")
             sys.exit(0)
         
-        # 1. 설정 로딩 및 검증
+        # 1. 로깅 초기화 및 설정 검증
+        setup_logging()
         validate_config()
         
         # 2. DB 연결/초기화
@@ -34,10 +36,15 @@ def main():
         # 3. 리포트 생성
         if MONTH_OVERRIDE:
             print(f"MONTH_OVERRIDE={MONTH_OVERRIDE}로 월간 리포트 생성")
-        report = generate_monthly_report()
+        with track_performance("generate_monthly_report"):
+            report = generate_monthly_report()
         
         # 4. 텔레그램 전송
-        success = send_message(report)
+        with track_performance("send_telegram"):
+            success = send_message(report)
+        
+        # 5. 성능 요약 출력
+        print(PerformanceTracker().get_summary())
         
         if success:
             print("✓ 월간 리포트 전송 완료")

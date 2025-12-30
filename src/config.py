@@ -15,6 +15,10 @@ load_dotenv(env_path)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# 로깅 설정
+LOG_FORMAT = os.getenv("LOG_FORMAT", "text").lower()  # "text" | "json"
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
 # 데이터 소스 설정
 NEWS_PROVIDER = os.getenv("NEWS_PROVIDER", "dummy")
 MARKET_PROVIDER = os.getenv("MARKET_PROVIDER", "dummy")

@@ -14,12 +14,14 @@ from src.database import ensure_db
 from src.reports.evening import generate_evening_report
 from src.telegram import send_message, send_error_notification
 from src.market.provider import get_market_provider
+from src.utils.logging import setup_logging, track_performance, PerformanceTracker
 
 
 def main():
     """메인 실행 함수"""
     try:
-        # 1. 설정 로딩 및 검증
+        # 1. 로깅 초기화 및 설정 검증
+        setup_logging()
         validate_config()
         
         # 2. DB 연결/초기화
@@ -34,7 +36,8 @@ def main():
             print(f"Provider 초기화 실패: {e}")
         
         # 4. 리포트 생성
-        report = generate_evening_report()
+        with track_performance("generate_evening_report"):
+            report = generate_evening_report()
         
         # 5. 저장된 거래 확인 (디버그)
         from src.database import get_db_connection
@@ -60,7 +63,11 @@ def main():
                     print(f"  {provider}: {stat['count']}건")
         
         # 6. 텔레그램 전송
-        success = send_message(report)
+        with track_performance("send_telegram"):
+            success = send_message(report)
+        
+        # 7. 성능 요약 출력
+        print(PerformanceTracker().get_summary())
         
         if success:
             print("✓ 오후 리포트 전송 완료")

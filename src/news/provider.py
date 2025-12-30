@@ -17,7 +17,8 @@ from src.news.base import NewsProvider, NewsItem
 from src.news.quality import calculate_quality_score, filter_by_quality
 from src.utils.date_utils import KST
 from src.utils.text import normalize_title, jaccard_similarity
-from src.config import GOOGLE_NEWS_MAX_PER_QUERY, NAVER_CLIENT_ID, NAVER_CLIENT_SECRET
+from src.config import GOOGLE_NEWS_MAX_PER_QUERY, NAVER_CLIENT_ID, NAVER_CLIENT_SECRET, LOG_FORMAT
+from src.utils.logging import track_performance, log_with_extra
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +160,9 @@ class GoogleNewsRSSProvider(NewsProvider):
             url = f"{self.base_url}?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
             
             # 요청 (타임아웃 10초)
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
+            with track_performance(f"google_news_fetch", {"query": query}):
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
             
             # XML 파싱
             root = ET.fromstring(response.content)
@@ -360,9 +362,10 @@ class NaverNewsProvider(NewsProvider):
         }
 
         try:
-            response = requests.get(self.api_url, headers=headers, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            with track_performance(f"naver_news_fetch", {"query": query}):
+                response = requests.get(self.api_url, headers=headers, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
             
             news_items = []
             for item in data.get("items", []):
@@ -516,7 +519,11 @@ class MultiNewsProvider(NewsProvider):
             seen_titles.append((norm_title, item))
             unique_items.append(item)
             
-        logger.info(f"MultiNewsProvider: 총 {len(all_items)}건 → 최종 {len(unique_items)}건")
+        log_with_extra(logger, logging.INFO, "MultiNewsProvider 수집 완료", {
+            "total_items": len(all_items),
+            "unique_items": len(unique_items),
+            "duration": duration
+        })
         return unique_items
 
 

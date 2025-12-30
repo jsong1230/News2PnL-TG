@@ -12,9 +12,10 @@ from src.data.kr_symbols import (
     get_foreign_substitute_symbols,
     get_symbol_code
 )
-from src.config import WATCHLIST_KR, LLM_ENABLED, LLM_MODEL
+from src.config import WATCHLIST_KR, LLM_ENABLED, LLM_MODEL, LOG_FORMAT
 from src.llm.client import generate_json
 from src.market.financial import fetch_financial_metrics, calculate_checklist_scores_from_metrics
+from src.utils.logging import track_performance, log_with_extra
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class WatchStock:
     confidence_reason: str  # 확신도 이유
 
 
+@track_performance("extract_stock_candidates")
 def extract_stock_candidates(
     digest: NewsDigest, 
     news_items: List[NewsItem],
@@ -305,7 +307,9 @@ def create_stock_candidates(
     # 1. 후보 종목 추출 및 점수 계산
     candidate_scores = extract_stock_candidates(digest, news_items, overnight_signals=overnight_signals)
     
-    logger.info(f"추출된 종목 후보 수: {len(candidate_scores)}개")
+    log_with_extra(logger, logging.INFO, "종목 후보 추출 완료", {
+        "candidate_count": len(candidate_scores)
+    })
     if candidate_scores:
         top_5 = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)[:5]
         logger.info(f"상위 5개 후보: {[(name, score) for name, score in top_5]}")
@@ -762,6 +766,7 @@ def parse_llm_response(
         return None
 
 
+@track_performance("pick_watch_stocks")
 def pick_watch_stocks(
     digest: NewsDigest,
     news_items: List[NewsItem],
