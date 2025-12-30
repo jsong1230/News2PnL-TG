@@ -14,6 +14,7 @@ from src.data.kr_symbols import (
 )
 from src.config import WATCHLIST_KR, LLM_ENABLED, LLM_MODEL
 from src.llm.client import generate_json
+from src.market.financial import fetch_financial_metrics, calculate_checklist_scores_from_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -137,48 +138,73 @@ def extract_stock_candidates(
     return scores
 
 
-def calculate_checklist_score(stock_name: str, has_catalyst: bool) -> Tuple[Dict[str, int], int]:
+def calculate_checklist_score(
+    stock_name: str, 
+    has_catalyst: bool,
+    financial_metrics: Optional[Any] = None
+) -> Tuple[Dict[str, int], int]:
     """
-    6단계 체크리스트 점수 계산
+    6단계 체크리스트 점수 계산 (재무 데이터 통합)
     
     Args:
         stock_name: 종목명
         has_catalyst: 뉴스 catalyst가 있는지 여부
+        financial_metrics: 재무 지표 (FinancialMetrics 객체, 선택사항)
     
     Returns:
         (체크리스트 점수 딕셔너리, 총점) 튜플
     """
-    scores = {}
+    in_watchlist = stock_name in WATCHLIST_KR
     
-    # 1) 내가 아는 회사인가?
-    if stock_name in WATCHLIST_KR:
-        scores["내가 아는 회사"] = 2
+    # 재무 데이터가 있으면 사용, 없으면 기본값
+    if financial_metrics and financial_metrics.success:
+        scores = calculate_checklist_scores_from_metrics(
+            financial_metrics, 
+            has_catalyst, 
+            in_watchlist
+        )
+        # 키 이름을 한글로 변환 (기존 호환성 유지)
+        scores_kr = {
+            "내가 아는 회사": scores.get("known_company", 1),
+            "비즈니스 설명 가능": scores.get("business_explainable", 1),
+            "3년간 실적 성장": scores.get("growth_3y", 1),
+            "PER 10~20": scores.get("per_10_20", 1),
+            "부채비율 100% 이하": scores.get("debt_lt_100", 1),
+            "살 이유 명확": scores.get("clear_reason", 1)
+        }
     else:
-        scores["내가 아는 회사"] = 1
+        # 재무 데이터 없으면 기본값 사용
+        scores_kr = {}
+        
+        # 1) 내가 아는 회사인가?
+        if in_watchlist:
+            scores_kr["내가 아는 회사"] = 2
+        else:
+            scores_kr["내가 아는 회사"] = 1
+        
+        # 2) 비즈니스 설명 가능?
+        if stock_name in KR_SYMBOLS:
+            scores_kr["비즈니스 설명 가능"] = 2
+        else:
+            scores_kr["비즈니스 설명 가능"] = 1
+        
+        # 3) 3년간 실적 성장?
+        scores_kr["3년간 실적 성장"] = 1  # 데이터 없으므로 기본 1점
+        
+        # 4) PER 10~20?
+        scores_kr["PER 10~20"] = 1  # 데이터 없으므로 기본 1점
+        
+        # 5) 부채비율 100% 이하?
+        scores_kr["부채비율 100% 이하"] = 1  # 데이터 없으므로 기본 1점
+        
+        # 6) 살 이유가 명확한가?
+        if has_catalyst:
+            scores_kr["살 이유 명확"] = 2
+        else:
+            scores_kr["살 이유 명확"] = 1
     
-    # 2) 비즈니스 설명 가능?
-    if stock_name in KR_SYMBOLS:
-        scores["비즈니스 설명 가능"] = 2
-    else:
-        scores["비즈니스 설명 가능"] = 1
-    
-    # 3) 3년간 실적 성장?
-    scores["3년간 실적 성장"] = 1  # 데이터 없으므로 기본 1점
-    
-    # 4) PER 10~20?
-    scores["PER 10~20"] = 1  # 데이터 없으므로 기본 1점
-    
-    # 5) 부채비율 100% 이하?
-    scores["부채비율 100% 이하"] = 1  # 데이터 없으므로 기본 1점
-    
-    # 6) 살 이유가 명확한가?
-    if has_catalyst:
-        scores["살 이유 명확"] = 2
-    else:
-        scores["살 이유 명확"] = 1
-    
-    total = sum(scores.values())
-    return (scores, total)
+    total = sum(scores_kr.values())
+    return (scores_kr, total)
 
 
 def assess_confidence(total_score: int, has_catalyst: bool, in_watchlist: bool) -> Tuple[str, str]:
@@ -313,12 +339,28 @@ def create_stock_candidates(
                 if sector:
                     break
         
+        # 재무 데이터 수집 (비동기적으로, 실패해도 계속 진행)
+        financial_metrics = None
+        try:
+            financial_metrics = fetch_financial_metrics(code, stock_name, provider="yahoo")
+            if financial_metrics.success:
+                logger.debug(f"{stock_name} ({code}): 재무 데이터 수집 성공 - PER={financial_metrics.per}, 부채비율={financial_metrics.debt_ratio}%")
+        except Exception as e:
+            logger.debug(f"{stock_name} ({code}): 재무 데이터 수집 실패 (무시): {e}")
+        
         candidates.append({
             "name": stock_name,
             "code": code,
             "score": score,
             "matched_headlines": matched_headlines[:3],
-            "sector": sector
+            "sector": sector,
+            "financial_metrics": {
+                "per": financial_metrics.per if financial_metrics and financial_metrics.success else None,
+                "debt_ratio": financial_metrics.debt_ratio if financial_metrics and financial_metrics.success else None,
+                "revenue_growth_3y": financial_metrics.revenue_growth_3y if financial_metrics and financial_metrics.success else None,
+                "earnings_growth_3y": financial_metrics.earnings_growth_3y if financial_metrics and financial_metrics.success else None,
+                "success": financial_metrics.success if financial_metrics else False
+            } if financial_metrics else None
         })
         
         if len(candidates) >= max_candidates:
@@ -443,7 +485,24 @@ def create_llm_prompt(
     # 후보 종목 JSON
     candidates_json = json.dumps(candidates, ensure_ascii=False, indent=2)
     
-    user_prompt = f"""{news_summary}
+    # 재무 데이터가 있는 종목은 프롬프트에 명시
+    financial_info = ""
+    for candidate in candidates:
+        if candidate.get("financial_metrics") and candidate["financial_metrics"].get("success"):
+            fm = candidate["financial_metrics"]
+            financial_info += f"\n- {candidate['name']} ({candidate['code']}): "
+            if fm.get("per"):
+                financial_info += f"PER={fm['per']:.1f}, "
+            if fm.get("debt_ratio"):
+                financial_info += f"부채비율={fm['debt_ratio']:.1f}%, "
+            if fm.get("revenue_growth_3y"):
+                financial_info += f"매출성장률={fm['revenue_growth_3y']:.1f}%, "
+            financial_info = financial_info.rstrip(", ")
+    
+    if financial_info:
+        financial_info = "\n## 재무 데이터 (일부 종목):" + financial_info
+    
+    user_prompt = f"""{news_summary}{financial_info}
 
 ## 후보 종목 리스트 (반드시 이 중에서만 선택):
 ```json
@@ -458,9 +517,9 @@ def create_llm_prompt(
    - catalyst: 최대 2개 (관련 뉴스 요약)
    - risks: 정확히 2개 (리스크)
    - watch_trigger: 한 줄 (관찰 트리거)
-   - checklist: 각 항목 0~2점 (재무데이터 연동 전이므로 가정치 가능)
+   - checklist: 각 항목 0~2점 (재무데이터가 있으면 실제 데이터 기반, 없으면 가정치)
    - must_use_news_refs: [0..N-1] (근거로 사용한 뉴스 헤드라인 인덱스)
-3. meta.notes에 "재무데이터 연동 전 가정치 포함" 문구 포함
+3. meta.notes: 재무데이터가 있는 종목은 "실제 재무데이터 기반", 없는 종목은 "재무데이터 연동 전 가정치 포함"
 
 ## 출력 JSON 스키마:
 {{
@@ -486,7 +545,7 @@ def create_llm_prompt(
   ],
   "meta": {{
     "policy": "watchlist_only_no_buy",
-    "notes": "재무데이터 연동 전 가정치 포함"
+    "notes": "재무데이터는 실제 데이터 기반 또는 가정치 (종목별 상이)"
   }}
 }}"""
     
@@ -543,16 +602,54 @@ def parse_llm_response(
             risks = item.get("risks", ["시장 변동성 및 리스크 존재", "재무데이터 확인 필요"])
             watch_trigger = item.get("watch_trigger", "갭상승 시 추격 금지, 변동성 확인 후 관찰")
             
-            # 체크리스트 점수
+            # 체크리스트 점수 (LLM 출력 사용, 재무 데이터가 있으면 보정)
             checklist_raw = item.get("checklist", {})
-            checklist_scores = {
-                "내가 아는 회사": checklist_raw.get("known_company", 1),
-                "비즈니스 설명 가능": checklist_raw.get("business_explainable", 1),
-                "3년간 실적 성장": checklist_raw.get("growth_3y", 1),
-                "PER 10~20": checklist_raw.get("per_10_20", 1),
-                "부채비율 100% 이하": checklist_raw.get("debt_lt_100", 1),
-                "살 이유 명확": checklist_raw.get("clear_reason", 1)
-            }
+            
+            # 후보에서 재무 데이터 가져오기
+            candidate = candidate_map.get((name, code))
+            financial_metrics = None
+            if candidate and candidate.get("financial_metrics") and candidate["financial_metrics"].get("success"):
+                from src.market.financial import FinancialMetrics
+                fm_dict = candidate["financial_metrics"]
+                financial_metrics = FinancialMetrics(
+                    symbol=code,
+                    name=name,
+                    per=fm_dict.get("per"),
+                    debt_ratio=fm_dict.get("debt_ratio"),
+                    revenue_growth_3y=fm_dict.get("revenue_growth_3y"),
+                    earnings_growth_3y=fm_dict.get("earnings_growth_3y"),
+                    success=True
+                )
+            
+            # LLM이 준 점수를 기본으로 사용하되, 재무 데이터가 있으면 보정
+            has_catalyst = len(item.get("catalyst", [])) > 0
+            in_watchlist = name in WATCHLIST_KR
+            
+            if financial_metrics:
+                # 재무 데이터 기반 점수 계산
+                calculated_scores = calculate_checklist_scores_from_metrics(
+                    financial_metrics, has_catalyst, in_watchlist
+                )
+                # LLM 점수와 계산된 점수 중 높은 값 사용 (LLM이 재무 데이터를 고려했을 수도 있음)
+                checklist_scores = {
+                    "내가 아는 회사": max(checklist_raw.get("known_company", 1), calculated_scores.get("known_company", 1)),
+                    "비즈니스 설명 가능": max(checklist_raw.get("business_explainable", 1), calculated_scores.get("business_explainable", 1)),
+                    "3년간 실적 성장": max(checklist_raw.get("growth_3y", 1), calculated_scores.get("growth_3y", 1)),
+                    "PER 10~20": max(checklist_raw.get("per_10_20", 1), calculated_scores.get("per_10_20", 1)),
+                    "부채비율 100% 이하": max(checklist_raw.get("debt_lt_100", 1), calculated_scores.get("debt_lt_100", 1)),
+                    "살 이유 명확": max(checklist_raw.get("clear_reason", 1), calculated_scores.get("clear_reason", 1))
+                }
+            else:
+                # 재무 데이터 없으면 LLM 점수 그대로 사용
+                checklist_scores = {
+                    "내가 아는 회사": checklist_raw.get("known_company", 1),
+                    "비즈니스 설명 가능": checklist_raw.get("business_explainable", 1),
+                    "3년간 실적 성장": checklist_raw.get("growth_3y", 1),
+                    "PER 10~20": checklist_raw.get("per_10_20", 1),
+                    "부채비율 100% 이하": checklist_raw.get("debt_lt_100", 1),
+                    "살 이유 명확": checklist_raw.get("clear_reason", 1)
+                }
+            
             total_score = sum(checklist_scores.values())
             
             # 확신도 변환 (low/mid/high -> 하/중/상)
@@ -609,7 +706,10 @@ def pick_watch_stocks(
         logger.warning("종목 후보가 없습니다")
         return []
     
-    # 2. LLM 사용 시도
+    # 2. 재무 데이터를 candidates에 포함 (이미 create_stock_candidates에서 수집됨)
+    # 재무 데이터가 있는 종목은 LLM 프롬프트에 포함
+    
+    # 3. LLM 사용 시도
     if LLM_ENABLED and date_str:
         try:
             system_prompt, user_prompt = create_llm_prompt(date_str, digest, candidates)
@@ -631,7 +731,7 @@ def pick_watch_stocks(
         except Exception as e:
             logger.warning(f"LLM 처리 중 오류 발생, 룰 기반으로 fallback: {e}")
     
-    # 3. 룰 기반 fallback (기존 로직)
+    # 4. 룰 기반 fallback (기존 로직)
     logger.info("룰 기반 종목 선정 사용")
     candidate_scores = {c["name"]: c["score"] for c in candidates}
     
@@ -770,9 +870,27 @@ def pick_watch_stocks(
         else:
             thesis = f"{stock_name} 섹터 동향 관찰"
         
-        # 체크리스트 점수 계산
+        # 재무 데이터 가져오기 (candidates에서)
+        financial_metrics = None
+        for candidate in candidates:
+            if candidate["name"] == stock_name and candidate.get("financial_metrics"):
+                # financial_metrics 딕셔너리를 FinancialMetrics 객체로 변환
+                from src.market.financial import FinancialMetrics
+                fm_dict = candidate["financial_metrics"]
+                financial_metrics = FinancialMetrics(
+                    symbol=code,
+                    name=stock_name,
+                    per=fm_dict.get("per"),
+                    debt_ratio=fm_dict.get("debt_ratio"),
+                    revenue_growth_3y=fm_dict.get("revenue_growth_3y"),
+                    earnings_growth_3y=fm_dict.get("earnings_growth_3y"),
+                    success=fm_dict.get("success", False)
+                )
+                break
+        
+        # 체크리스트 점수 계산 (재무 데이터 포함)
         has_catalyst = len(catalysts) > 0
-        checklist_scores, total_score = calculate_checklist_score(stock_name, has_catalyst)
+        checklist_scores, total_score = calculate_checklist_score(stock_name, has_catalyst, financial_metrics)
         
         # 확신도 평가
         in_watchlist = stock_name in WATCHLIST_KR

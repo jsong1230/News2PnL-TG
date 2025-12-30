@@ -277,11 +277,14 @@ def calculate_late_news_penalty(
     if not overnight_signals:
         return 0.0
     
-    # 섹터별 선행지표 매핑
+    # 섹터별 선행지표 매핑 (강화)
     sector_indicators = {
-        "반도체/AI": ["NVDA", "Nasdaq"],
+        "반도체/AI": ["NVDA", "Nasdaq", "S&P500"],
         "코인/크립토": ["BTC"],
         "거시/금리/달러": ["USDKRW", "US10Y", "DXY"],
+        "에너지/원유": ["WTI", "S&P500"],
+        "금/귀금속": ["Gold", "DXY"],
+        "변동성/리스크": ["VIX", "Nasdaq"],
     }
     
     if sector not in sector_indicators:
@@ -290,12 +293,31 @@ def calculate_late_news_penalty(
     # 해당 섹터의 선행지표들 확인
     indicators = sector_indicators[sector]
     max_change = 0.0
+    weighted_change = 0.0
+    indicator_count = 0
+    
+    # 섹터별 가중치 (중요한 지표에 더 높은 가중치)
+    indicator_weights = {
+        "반도체/AI": {"NVDA": 2.0, "Nasdaq": 1.5, "S&P500": 1.0},
+        "코인/크립토": {"BTC": 2.0},
+        "거시/금리/달러": {"USDKRW": 2.0, "US10Y": 1.5, "DXY": 1.0},
+        "에너지/원유": {"WTI": 2.0, "S&P500": 1.0},
+        "금/귀금속": {"Gold": 2.0, "DXY": 1.0},
+        "변동성/리스크": {"VIX": 2.0, "Nasdaq": 1.0},
+    }
+    
+    weights = indicator_weights.get(sector, {})
     
     for indicator_name in indicators:
         signal = overnight_signals.get(indicator_name)
         if signal and signal.success and signal.pct_change is not None:
             abs_change = abs(signal.pct_change)
             max_change = max(max_change, abs_change)
+            
+            # 가중 평균 계산
+            weight = weights.get(indicator_name, 1.0)
+            weighted_change += abs_change * weight
+            indicator_count += weight
     
     # 선행지표가 크게 움직였으면 late penalty 증가
     if max_change > 3.0:  # 3% 이상 변동

@@ -33,6 +33,9 @@ DEFAULT_TICKERS = {
     "DXY": "DX-Y.NYB",
     "EWY": "EWY",
     "USDKRW": "KRW=X",
+    "VIX": "^VIX",  # 변동성 지수
+    "WTI": "CL=F",  # 원유 (WTI)
+    "Gold": "GC=F",  # 금
 }
 
 
@@ -136,6 +139,7 @@ def fetch_overnight_signals(
 def assess_market_tone(signals: Dict[str, OvernightSignal]) -> str:
     """
     시장 톤 평가 (risk_on / risk_off / mixed)
+    VIX, 원유, 금 등 추가 지표를 고려하여 개선
     
     Args:
         signals: 오버나이트 신호 딕셔너리
@@ -146,6 +150,9 @@ def assess_market_tone(signals: Dict[str, OvernightSignal]) -> str:
     nasdaq = signals.get("Nasdaq")
     sp500 = signals.get("S&P500")
     usdkrw = signals.get("USDKRW")
+    vix = signals.get("VIX")
+    wti = signals.get("WTI")
+    gold = signals.get("Gold")
     
     # Nasdaq/S&P 상승 여부
     nasdaq_up = nasdaq and nasdaq.success and nasdaq.pct_change and nasdaq.pct_change > 0
@@ -155,11 +162,51 @@ def assess_market_tone(signals: Dict[str, OvernightSignal]) -> str:
     # USDKRW 하락 여부 (원화 강세)
     krw_strong = usdkrw and usdkrw.success and usdkrw.pct_change and usdkrw.pct_change < 0
     
+    # VIX 하락 여부 (변동성 감소 = 리스크 온)
+    vix_down = vix and vix.success and vix.pct_change and vix.pct_change < 0
+    
+    # 원유 상승 여부 (경기 회복 신호)
+    wti_up = wti and wti.success and wti.pct_change and wti.pct_change > 0
+    
+    # 금 하락 여부 (리스크 온일 때 금은 하락)
+    gold_down = gold and gold.success and gold.pct_change and gold.pct_change < 0
+    
+    # 종합 판단 (가중치 적용)
+    risk_on_signals = 0
+    risk_off_signals = 0
+    
+    if us_market_up:
+        risk_on_signals += 2  # 미국 증시 상승은 강한 신호
+    else:
+        risk_off_signals += 2
+    
+    if krw_strong:
+        risk_on_signals += 1  # 원화 강세
+    else:
+        risk_off_signals += 1
+    
+    if vix_down:
+        risk_on_signals += 1  # 변동성 감소
+    elif vix and vix.success and vix.pct_change and vix.pct_change > 5:
+        risk_off_signals += 2  # VIX 급등은 강한 리스크 오프 신호
+    
+    if wti_up:
+        risk_on_signals += 1  # 원유 상승 (경기 회복)
+    elif wti and wti.success and wti.pct_change and wti.pct_change < -2:
+        risk_off_signals += 1  # 원유 급락
+    
+    if gold_down:
+        risk_on_signals += 0.5  # 금 하락 (약한 신호)
+    elif gold and gold.success and gold.pct_change and gold.pct_change > 2:
+        risk_off_signals += 1  # 금 상승 (안전자산 선호)
+    
     # 판단 로직
-    if us_market_up and krw_strong:
+    if risk_on_signals > risk_off_signals + 1:
         return "risk_on"
-    elif not us_market_up and not krw_strong:
+    elif risk_off_signals > risk_on_signals + 1:
         return "risk_off"
     else:
         return "mixed"
+
+
 
