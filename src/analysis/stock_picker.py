@@ -546,8 +546,27 @@ def create_llm_prompt(
     news_summary += f"\n## 한국장 영향: {digest.korea_impact}\n"
     news_summary += f"\n## 수집 정보: 수집={digest.fetched_count}건, 시간필터={digest.time_filtered_count}건, 중복제거={digest.deduped_count}건\n"
     
-    # 후보 종목 JSON
-    candidates_json = json.dumps(candidates, ensure_ascii=False, indent=2)
+    # 후보 종목 JSON 최적화 (토근 절감)
+    optimized_candidates = []
+    for c in candidates:
+        cand = {
+            "name": c["name"],
+            "code": c["code"],
+            "sector": c["sector"],
+            "headlines": c["matched_headlines"][:2]  # 헤드라인 2개로 제한
+        }
+        # 재무 데이터가 성공한 경우에만 포함하여 토큰 절약
+        fm = c.get("financial_metrics")
+        if fm and fm.get("success"):
+            cand["finance"] = {
+                "per": round(fm["per"], 1) if fm.get("per") else None,
+                "debt": round(fm["debt_ratio"], 1) if fm.get("debt_ratio") else None,
+                "growth": round(fm["revenue_growth_3y"], 1) if fm.get("revenue_growth_3y") else None
+            }
+        optimized_candidates.append(cand)
+    
+    # 콤팩트한 JSON (공백 제거)
+    candidates_json = json.dumps(optimized_candidates, ensure_ascii=False, separators=(',', ':'))
     
     # 재무 데이터가 있는 종목은 프롬프트에 명시
     financial_info = ""

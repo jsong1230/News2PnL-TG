@@ -7,6 +7,9 @@ import logging
 from urllib.parse import quote, urlparse
 from email.utils import parsedate_to_datetime
 
+import concurrent.futures
+import time
+import threading
 import requests
 from pytz import UTC
 
@@ -113,6 +116,7 @@ class GoogleNewsRSSProvider(NewsProvider):
         self.base_url = "https://news.google.com/rss/search"
         self.parsed_ok_count = 0
         self.parsed_fail_count = 0
+        self._count_lock = threading.Lock()
         self.title_threshold = 0.85  # 제목 유사도 임계값
         self.min_quality_score = 0.4  # 최소 품질 점수 (수집 단계는 느슨하게)
     
@@ -137,12 +141,14 @@ class GoogleNewsRSSProvider(NewsProvider):
                 # UTC로 변환
                 dt = dt.astimezone(UTC)
             
-            self.parsed_ok_count += 1
+            with self._count_lock:
+                self.parsed_ok_count += 1
             return dt
         
         except Exception as e:
             logger.debug(f"날짜 파싱 실패: {pub_date_text}, {e}")
-            self.parsed_fail_count += 1
+            with self._count_lock:
+                self.parsed_fail_count += 1
             return None
     
     def _fetch_single_query(self, query: str) -> List[NewsItem]:
@@ -226,19 +232,23 @@ class GoogleNewsRSSProvider(NewsProvider):
         self.parsed_fail_count = 0
         
         all_news_items = []
+        start_time = time.time()
         
-        # 각 쿼리별로 순차 수집
-        for query in self.queries:
-            query = query.strip()
-            if not query:
-                continue
-            
-            items = self._fetch_single_query(query)
-            all_news_items.extend(items)
-            logger.info(f"쿼리 '{query}': {len(items)}건 수집")
+        # 각 쿼리별로 병렬 수집 (ThreadPoolExecutor 사용)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_query = {executor.submit(self._fetch_single_query, query.strip()): query for query in self.queries if query.strip()}
+            for future in concurrent.futures.as_completed(future_to_query):
+                query = future_to_query[future]
+                try:
+                    items = future.result()
+                    all_news_items.extend(items)
+                    logger.debug(f"쿼리 '{query}': {len(items)}건 수집 완료")
+                except Exception as e:
+                    logger.warning(f"쿼리 '{query}' 수집 중 예외 발생: {e}")
         
+        duration = time.time() - start_time
         total_fetched = len(all_news_items)
-        logger.info(f"전체 수집: {total_fetched}건 (쿼리 {len(self.queries)}개)")
+        logger.info(f"뉴스 수집 완료: 총 {total_fetched}건 (쿼리 {len(self.queries)}개, 소요시간: {duration:.2f}s)")
         logger.info(f"published_at 파싱: 성공 {self.parsed_ok_count}건, 실패 {self.parsed_fail_count}건")
         
         # 1. 품질 점수 계산 및 필터링
@@ -319,6 +329,7 @@ class NaverNewsProvider(NewsProvider):
         self.api_url = "https://openapi.naver.com/v1/search/news.json"
         self.parsed_ok_count = 0
         self.parsed_fail_count = 0
+        self._count_lock = threading.Lock()
         self.title_threshold = 0.85
         self.min_quality_score = 0.4
 
@@ -360,10 +371,11 @@ class NaverNewsProvider(NewsProvider):
                 link = item.get("originallink") or item.get("link")
                 
                 published_at = self._parse_pubdate(item.get("pubDate", ""))
-                if published_at:
-                    self.parsed_ok_count += 1
-                else:
-                    self.parsed_fail_count += 1
+                with self._count_lock:
+                    if published_at:
+                        self.parsed_ok_count += 1
+                    else:
+                        self.parsed_fail_count += 1
 
                 news_items.append(NewsItem(
                     title=title,
@@ -382,12 +394,22 @@ class NaverNewsProvider(NewsProvider):
         self.parsed_ok_count = 0
         self.parsed_fail_count = 0
         all_news_items = []
+        start_time = time.time()
 
-        for query in self.queries:
-            items = self._fetch_single_query(query)
-            all_news_items.extend(items)
+        # 각 쿼리별로 병렬 수집
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_query = {executor.submit(self._fetch_single_query, query.strip()): query for query in self.queries if query.strip()}
+            for future in concurrent.futures.as_completed(future_to_query):
+                query = future_to_query[future]
+                try:
+                    items = future.result()
+                    all_news_items.extend(items)
+                except Exception as e:
+                    logger.warning(f"네이버 쿼리 '{query}' 중 예외 발생: {e}")
         
+        duration = time.time() - start_time
         total_fetched = len(all_news_items)
+        logger.info(f"네이버 뉴스 수집 완료: 총 {total_fetched}건 (소요시간: {duration:.2f}s)")
         
         # 품질 및 중복 제거
         items_with_quality = []
@@ -445,14 +467,25 @@ class MultiNewsProvider(NewsProvider):
         self._parsed_ok_count = 0
         self._parsed_fail_count = 0
         
-        for provider in self.providers:
-            # 개별 제공자에서 이미 품질 필터링 및 중복 제거가 어느 정도 되어 있음
-            items = provider.fetch_news(start_dt, end_dt)
-            all_items.extend(items)
-            
-            self._last_fetched_count += getattr(provider, '_last_fetched_count', len(items))
-            self._parsed_ok_count += getattr(provider, '_parsed_ok_count', sum(1 for i in items if i.published_at))
-            self._parsed_fail_count += getattr(provider, '_parsed_fail_count', sum(1 for i in items if not i.published_at))
+        start_time = time.time()
+        
+        # 여러 제공자를 병렬로 호출
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.providers)) as executor:
+            future_to_provider = {executor.submit(provider.fetch_news, start_dt, end_dt): provider for provider in self.providers}
+            for future in concurrent.futures.as_completed(future_to_provider):
+                provider = future_to_provider[future]
+                try:
+                    items = future.result()
+                    all_items.extend(items)
+                    
+                    self._last_fetched_count += getattr(provider, '_last_fetched_count', len(items))
+                    self._parsed_ok_count += getattr(provider, '_parsed_ok_count', sum(1 for i in items if i.published_at))
+                    self._parsed_fail_count += getattr(provider, '_parsed_fail_count', sum(1 for i in items if not i.published_at))
+                except Exception as e:
+                    logger.error(f"Provider {type(provider).__name__} fetch_news 도중 예외 발생: {e}")
+        
+        duration = time.time() - start_time
+        logger.info(f"MultiNewsProvider: 모든 소스 수집 완료 (소요시간: {duration:.2f}s)")
         
         # 전체 항목에 대해 최종 중복 제거 (URL 기준 및 제목 유사도 기준)
         # 이미 개별 제공자 내에서 처리되었지만, 제공자 간 중복이 있을 수 있음

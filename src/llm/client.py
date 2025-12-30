@@ -32,6 +32,16 @@ def _add_token_usage(tokens: int):
     _daily_token_usage["tokens"] += tokens
 
 
+def get_daily_token_usage() -> Dict[str, Any]:
+    """현재까지의 일일 토큰 사용량 정보 반환"""
+    _check_daily_budget() # 날짜 갱신 보장
+    return {
+        "tokens": _daily_token_usage["tokens"],
+        "limit": LLM_DAILY_BUDGET_TOKENS,
+        "percent": (_daily_token_usage["tokens"] / LLM_DAILY_BUDGET_TOKENS * 100) if LLM_DAILY_BUDGET_TOKENS > 0 else 0
+    }
+
+
 def generate_json(
     system_prompt: str,
     user_prompt: str,
@@ -116,8 +126,17 @@ def generate_json(
         tokens_used = usage.total_tokens if usage else 0
         _add_token_usage(tokens_used)
         
-        logger.info(f"OpenAI API 호출 완료: model={LLM_MODEL}, tokens={tokens_used}, latency={latency:.2f}s")
-        print(f"[LLM] OpenAI 호출: model={LLM_MODEL}, tokens={tokens_used}, latency={latency:.2f}s")
+        # 누적 사용량 확인
+        daily = get_daily_token_usage()
+        
+        logger.info(
+            f"OpenAI API 호출 완료: model={LLM_MODEL}, tokens={tokens_used}, "
+            f"daily_total={daily['tokens']}/{daily['limit']} ({daily['percent']:.1f}%), latency={latency:.2f}s"
+        )
+        print(
+            f"[LLM] OpenAI 호출: tokens={tokens_used}, "
+            f"누적={daily['tokens']}/{daily['limit']} ({daily['percent']:.1f}%), latency={latency:.2f}s"
+        )
         
         return result
         
