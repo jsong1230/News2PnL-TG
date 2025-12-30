@@ -84,66 +84,63 @@ def extract_stock_candidates(
                     scores[symbol_name] = 0
                 scores[symbol_name] += 2  # 섹터 bullet 언급: +2
     
-    # WATCHLIST_KR에 있는 종목 가중치 추가
+    # WATCHLIST_KR에 있는 종목 가중치 추가 (가중치 감소: +2 → +1)
+    # WATCHLIST_KR은 참고용이지, 무조건 선택되게 하지 않음
     for watch_name in WATCHLIST_KR:
         if watch_name in scores:
-            scores[watch_name] += 2  # WATCHLIST_KR 포함: +2
-        else:
-            # WATCHLIST_KR에 있지만 아직 언급되지 않은 경우
-            code = get_symbol_code(watch_name)
-            if code:
-                scores[watch_name] = 2  # 기본 점수 부여
+            scores[watch_name] += 1  # WATCHLIST_KR 포함: +1 (기존 +2에서 감소)
+        # WATCHLIST_KR에 있지만 언급되지 않은 경우는 점수 부여하지 않음 (다양성 확보)
     
-    # 해외 종목 → 한국 대체 종목 매핑
+    # 해외 종목 → 한국 대체 종목 매핑 (FOREIGN_TO_KR_MAPPING 사용)
+    from src.data.kr_symbols import FOREIGN_TO_KR_MAPPING
     all_text_lower = all_text.lower()
-    for foreign_name, kr_substitutes in [
-        ("엔비디아", ["삼성전자", "SK하이닉스"]),
-        ("nvidia", ["삼성전자", "SK하이닉스"]),
-        ("amd", ["삼성전자", "SK하이닉스"]),
-        ("테슬라", ["LG에너지솔루션", "삼성SDI"]),
-        ("tesla", ["LG에너지솔루션", "삼성SDI"]),
-    ]:
+    for foreign_name, kr_substitutes in FOREIGN_TO_KR_MAPPING.items():
         if foreign_name in all_text_lower:
             for kr_name in kr_substitutes:
                 if kr_name not in scores:
                     scores[kr_name] = 0
                 scores[kr_name] += 1  # 해외 종목 관련: +1
     
-    # 오버나이트 선행 신호 기반 점수 조정
+    # 오버나이트 선행 신호 기반 점수 조정 (섹터별 동적 처리)
     if overnight_signals:
-        # 반도체/AI 섹터: Nasdaq/NVDA 강하면 가점
+        from src.market.overnight import assess_market_tone
+        from src.data.kr_symbols import FOREIGN_TO_KR_MAPPING
+        
+        # 반도체/AI 섹터: Nasdaq/NVDA 강하면 관련 종목 가점
         nvda = overnight_signals.get("NVDA")
         nasdaq = overnight_signals.get("Nasdaq")
         
+        # NVDA 관련 한국 종목 찾기 (FOREIGN_TO_KR_MAPPING 사용)
         if nvda and nvda.success and nvda.pct_change:
             if nvda.pct_change > 1.0:  # NVDA +1% 이상
-                for kr_name in ["삼성전자", "SK하이닉스"]:
+                nvda_related = FOREIGN_TO_KR_MAPPING.get("nvidia", []) + FOREIGN_TO_KR_MAPPING.get("엔비디아", [])
+                for kr_name in set(nvda_related):  # 중복 제거
                     if kr_name not in scores:
                         scores[kr_name] = 0
-                    scores[kr_name] += 2  # NVDA 강세: +2
+                    scores[kr_name] += 1  # NVDA 강세: +1 (기존 +2에서 감소)
         
+        # Nasdaq 강세 시 반도체/AI 관련 종목 가점 (더 넓은 범위)
         if nasdaq and nasdaq.success and nasdaq.pct_change:
             if nasdaq.pct_change > 0.5:  # Nasdaq +0.5% 이상
-                for kr_name in ["삼성전자", "SK하이닉스"]:
-                    if kr_name not in scores:
-                        scores[kr_name] = 0
-                    scores[kr_name] += 1  # Nasdaq 강세: +1
+                # 반도체/AI 관련 종목 찾기 (뉴스에서 언급된 종목 중)
+                for stock_name in scores.keys():
+                    # 반도체/AI 관련 키워드가 있는 종목만 가점
+                    if any(keyword in stock_name for keyword in ["반도체", "전자", "하이닉스", "칩스", "반도"]):
+                        scores[stock_name] += 1  # Nasdaq 강세: +1
         
-        # 코인 관련: BTC 강하면 가점
+        # 코인 관련: BTC 강하면 가점 (향후 확장 가능)
         btc = overnight_signals.get("BTC")
         if btc and btc.success and btc.pct_change:
             if btc.pct_change > 2.0:  # BTC +2% 이상
                 # 코인 관련 종목이 있으면 가점 (현재는 없지만 향후 확장 가능)
                 pass
         
-        # Risk-off 환경: 고변동 종목 감점
-        from src.market.overnight import assess_market_tone
+        # Risk-off 환경: 고변동 종목 감점 (섹터별로 동적 처리)
         market_tone = assess_market_tone(overnight_signals)
         if market_tone == "risk_off":
-            # 고변동 종목 감점 (예: 2차전지, 바이오 등)
-            high_volatility_stocks = ["LG에너지솔루션", "삼성SDI", "셀트리온"]
-            for stock_name in high_volatility_stocks:
-                if stock_name in scores:
+            # 고변동 종목 감점 (2차전지, 바이오 등)
+            for stock_name in scores.keys():
+                if any(keyword in stock_name for keyword in ["에너지", "SDI", "바이오", "제약", "헬스"]):
                     scores[stock_name] = max(0, scores[stock_name] - 1)  # -1 감점
     
     return scores
@@ -823,24 +820,53 @@ def pick_watch_stocks(
         except Exception as e:
             logger.warning(f"LLM 처리 중 오류 발생, 룰 기반으로 fallback: {e}")
     
-    # 4. 룰 기반 fallback (기존 로직)
+    # 4. 룰 기반 fallback (섹터별 다양성 고려)
     logger.info("룰 기반 종목 선정 사용")
     # candidates는 이미 재무 데이터가 포함되어 있음
     candidate_scores = {c["name"]: c["score"] for c in candidates}
     
-    # 점수 상위 종목 선택
+    # 점수 상위 종목 선택 (섹터별 다양성 고려)
     sorted_candidates = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
     
-    # 종목코드 기준으로 중복 제거
+    # 종목코드 기준으로 중복 제거 + 섹터별 다양성 확보
     seen_codes = set()
+    seen_sectors = set()  # 섹터별 다양성 확보
     selected = []
+    
+    # 1차: 섹터별로 최소 1개씩 선택 (점수 상위)
     for stock_name, score in sorted_candidates:
         code = get_symbol_code(stock_name)
-        if code and code not in seen_codes:
-            selected.append((stock_name, score))
-            seen_codes.add(code)
+        if not code or code in seen_codes:
+            continue
+        
+        # 섹터 확인
+        sector = None
+        for candidate in candidates:
+            if candidate["name"] == stock_name:
+                sector = candidate.get("sector")
+                break
+        
+        # 섹터가 없거나 이미 선택된 섹터면 스킵 (다양성 확보)
+        if sector and sector in seen_sectors:
+            continue
+        
+        selected.append((stock_name, score))
+        seen_codes.add(code)
+        if sector:
+            seen_sectors.add(sector)
+        
         if len(selected) >= max_count:
             break
+    
+    # 2차: 섹터 다양성 확보 후 남은 자리가 있으면 점수 상위로 채움
+    if len(selected) < max_count:
+        for stock_name, score in sorted_candidates:
+            code = get_symbol_code(stock_name)
+            if code and code not in seen_codes:
+                selected.append((stock_name, score))
+                seen_codes.add(code)
+                if len(selected) >= max_count:
+                    break
     
     watch_stocks = []
     
