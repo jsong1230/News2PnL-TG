@@ -10,9 +10,8 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+from src.utils.text import normalize_title, jaccard_similarity
 from src.analysis.news_analyzer import (
-    normalize_title,
-    jaccard_similarity,
     is_noise_article,
     calculate_freshness_score,
     calculate_novelty_score,

@@ -3,6 +3,8 @@ from typing import Optional, Dict
 from dataclasses import dataclass
 import logging
 
+from src.utils.retry import retry_with_backoff, classify_error
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,15 +19,23 @@ class FinancialMetrics:
     earnings_growth_3y: Optional[float] = None  # 3년 이익 성장률 (%)
     success: bool = False  # 조회 성공 여부
     error: Optional[str] = None  # 에러 메시지
+    error_type: Optional[str] = None  # 에러 타입 (network, data, timeout 등)
+    retry_count: int = 0  # 재시도 횟수
 
 
+@retry_with_backoff(
+    max_retries=2,
+    base_delay=1.0,
+    max_delay=5.0,
+    retryable_exceptions=(ConnectionError, TimeoutError, OSError)
+)
 def fetch_financial_metrics(
     symbol_code: str,
     stock_name: str,
     provider: str = "yahoo"
 ) -> FinancialMetrics:
     """
-    재무 지표 수집
+    재무 지표 수집 (재시도 로직 포함)
     
     Args:
         symbol_code: 종목코드 (예: "005930")
@@ -34,6 +44,9 @@ def fetch_financial_metrics(
     
     Returns:
         FinancialMetrics 객체
+    
+    Note:
+        네트워크 오류 시 exponential backoff로 최대 2회 재시도
     """
     metrics = FinancialMetrics(symbol=symbol_code, name=stock_name)
     
@@ -118,8 +131,13 @@ def fetch_financial_metrics(
                 logger.warning(f"{stock_name} ({symbol_code}): 재무 지표 데이터 없음 (info가 None)")
     
     except Exception as e:
+        error_type = classify_error(e)
         metrics.error = str(e)
-        logger.warning(f"{stock_name} ({symbol_code}) 재무 데이터 조회 실패: {e}")
+        metrics.error_type = error_type
+        logger.warning(
+            f"{stock_name} ({symbol_code}) 재무 데이터 조회 실패: "
+            f"[{error_type}] {type(e).__name__}: {e}"
+        )
     
     return metrics
 

@@ -10,6 +10,7 @@ from pytz import UTC
 
 from src.news.base import NewsItem
 from src.analysis.sector_keywords import SECTOR_KEYWORDS
+from src.utils.text import normalize_title, jaccard_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -90,29 +91,7 @@ CREDIBLE_DOMAINS = [
 ]
 
 
-def normalize_title(title: str) -> str:
-    """제목 정규화 (중복 제거용)"""
-    # 소문자 변환
-    title = title.lower()
-    # 특수문자 제거 (한글, 영문, 숫자만 남김)
-    title = re.sub(r'[^\w\s가-힣]', '', title)
-    # 공백 정규화
-    title = re.sub(r'\s+', ' ', title).strip()
-    return title
-
-
-def jaccard_similarity(text1: str, text2: str) -> float:
-    """Jaccard 유사도 계산 (단어 기반)"""
-    words1 = set(text1.split())
-    words2 = set(text2.split())
-    
-    if not words1 or not words2:
-        return 0.0
-    
-    intersection = len(words1 & words2)
-    union = len(words1 | words2)
-    
-    return intersection / union if union > 0 else 0.0
+# ... (locally removed normalize_title and jaccard_similarity)
 
 
 def is_noise_article(title: str, source: str = "", url: str = "") -> bool:

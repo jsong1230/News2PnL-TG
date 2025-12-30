@@ -4,8 +4,8 @@
 
 ## 📋 진행 현황
 
-- **완료**: 5개
-- **대기**: 10개
+- **완료**: 8개
+- **대기**: 7개
 - **진행 중**: 0개
 - **총**: 15개
 
@@ -44,6 +44,40 @@
 - **완료일**: 2025-12-30
 - **테스트 결과**: 58개 테스트 모두 통과 (news_analyzer: 30개, stock_picker: 16개, overnight: 11개, pnl: 1개)
 
+### 6. 에러 핸들링 개선
+- **상태**: 완료
+- **설명**: Yahoo Finance API 실패 시 더 나은 fallback 로직, 네트워크 오류 시 exponential backoff 적용
+- **구현 파일**: `src/utils/retry.py`, `src/market/provider.py`, `src/market/financial.py`, `tests/test_retry.py`
+- **완료일**: 2025-12-30
+- **주요 개선사항**:
+  - Exponential backoff 데코레이터 구현 (최대 3회 재시도)
+  - 에러 타입별 분류 (network, timeout, data, import, unknown)
+  - 재시도 가능/불가능 에러 구분
+  - 상세한 에러 로깅 및 추적
+  - 15개 테스트 추가 (전체 73개 테스트 통과)
+
+### 7. 뉴스 수집 품질 개선 (Phase 1)
+- **상태**: 완료
+- **설명**: 뉴스 품질 평가 시스템 도입 및 수집 단계 중복 필터링 강화
+- **구현 파일**: `src/news/quality.py`, `src/utils/text.py`, `src/news/provider.py`, `tests/test_news_quality.py`
+- **완료일**: 2025-12-30
+- **주요 개선사항**:
+  - 뉴스 품질 점수화 (제목 품질, 출처 신뢰도, 시간 유무)
+  - 출처별 신뢰도 가중치 부여 (연합뉴스, 한국경제 등 주요 언론 가점)
+  - 수집 단계에서 제목 유사도 기반 중복 제거 (Jaccard similarity)
+  - 8개 단위 테스트 추가 (전체 81개 테스트 통과)
+
+### 8. 뉴스 수집 품질 개선 (Phase 2)
+- **상태**: 완료
+- **설명**: 네이버 뉴스 API 통합 및 멀티 소스 수집 시스템 구축
+- **구현 파일**: `src/news/provider.py`, `src/config.py`, `tests/test_naver_provider.py`
+- **완료일**: 2025-12-30
+- **주요 개선사항**:
+  - `NaverNewsProvider` 구현 (네이버 오픈 API 연동)
+  - `MultiNewsProvider` 구현 (여러 소스 동시 수집 및 통합 중복 제거)
+  - `NEWS_PROVIDER` 설정을 통해 "rss,naver"와 같이 소스 조합 가능
+  - 전체 테스트 86개 통과 확인
+
 ---
 
 ## 🔄 진행 중인 항목
@@ -53,24 +87,6 @@
 ---
 
 ## ⏳ 대기 중인 항목
-
-### 2. 에러 핸들링 개선
-- **상태**: 대기
-- **설명**: Yahoo Finance API 실패 시 더 나은 fallback 로직, 네트워크 오류 시 exponential backoff 적용
-- **우선순위**: 중간
-- **예상 작업**:
-  - `src/market/provider.py`에 exponential backoff 로직 추가
-  - `src/market/financial.py`에 재시도 로직 개선
-  - 에러 타입별 fallback 전략 구현
-
-### 3. 뉴스 수집 품질 개선
-- **상태**: 대기
-- **설명**: Google News RSS 외 추가 뉴스 소스 통합 (예: 네이버 뉴스, 다음 뉴스 API), 중복 뉴스 필터링 강화
-- **우선순위**: 중간
-- **예상 작업**:
-  - 네이버 뉴스 API 연동
-  - 다음 뉴스 API 연동
-  - 중복 뉴스 필터링 알고리즘 개선
 
 ### 4. 시세 데이터 정확도 개선
 - **상태**: 대기

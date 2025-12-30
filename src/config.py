@@ -22,6 +22,10 @@ GOOGLE_NEWS_QUERY = os.getenv("GOOGLE_NEWS_QUERY", "한국 주식 시장")  # �
 GOOGLE_NEWS_QUERIES = os.getenv("GOOGLE_NEWS_QUERIES", "").strip()  # 여러 쿼리 (쉼표 구분)
 GOOGLE_NEWS_MAX_PER_QUERY = int(os.getenv("GOOGLE_NEWS_MAX_PER_QUERY", "30"))  # 쿼리별 최대 수집 개수 (기본값 30으로 상향)
 
+# 네이버 뉴스 API 설정
+NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
+
 # 기본 쿼리 세트 (GOOGLE_NEWS_QUERIES가 비어있을 때 사용)
 DEFAULT_NEWS_QUERIES = [
     "미국 증시", "나스닥", "S&P500", "연준 금리", "달러 환율", "유가",

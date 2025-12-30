@@ -5,6 +5,7 @@ import random
 import logging
 
 from src.market.base import MarketProvider, OHLC
+from src.utils.retry import retry_with_backoff, classify_error
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,12 @@ class YahooMarketProvider(MarketProvider):
         # .KS (KOSPI) 우선, 실패 시 .KQ (KOSDAQ) 시도
         return [f"{symbol_code}.KS", f"{symbol_code}.KQ"]
     
+    @retry_with_backoff(
+        max_retries=3,
+        base_delay=1.0,
+        max_delay=10.0,
+        retryable_exceptions=(ConnectionError, TimeoutError, OSError)
+    )
     def _fetch_ohlc_for_date(
         self, 
         yahoo_symbol: str, 
@@ -115,7 +122,7 @@ class YahooMarketProvider(MarketProvider):
         window_days: int = 3
     ) -> Optional[OHLC]:
         """
-        특정 날짜의 OHLC 조회
+        특정 날짜의 OHLC 조회 (재시도 로직 포함)
         
         Args:
             yahoo_symbol: Yahoo Finance 심볼
@@ -124,6 +131,9 @@ class YahooMarketProvider(MarketProvider):
         
         Returns:
             OHLC 데이터 또는 None
+        
+        Note:
+            네트워크 오류 시 exponential backoff로 최대 3회 재시도
         """
         try:
             # 전후 window_days일 범위로 데이터 조회
@@ -200,7 +210,12 @@ class YahooMarketProvider(MarketProvider):
             )
         
         except Exception as e:
-            logger.debug(f"Yahoo Finance 조회 실패 ({yahoo_symbol}): {e}", exc_info=True)
+            error_type = classify_error(e)
+            logger.warning(
+                f"Yahoo Finance 조회 실패 ({yahoo_symbol}): "
+                f"[{error_type}] {type(e).__name__}: {e}"
+            )
+            # 재시도 가능한 에러는 데코레이터가 처리하므로 여기서는 None 반환
             return None
     
     def get_price(self, symbol: str, date: Optional[datetime] = None) -> float:
