@@ -56,6 +56,15 @@ def extract_stock_candidates(
     all_text = " ".join(digest.top_headlines)
     all_text += " " + " ".join([bullet for bullets in digest.sector_bullets.values() for bullet in bullets])
     
+    # 뉴스 아이템 전체에서도 종목 찾기 (더 넓은 범위)
+    for item in news_items:
+        item_text = item.title + " " + (item.content or "")
+        found_symbols = find_symbols_in_text(item_text)
+        for symbol_name, code in found_symbols.items():
+            if symbol_name not in scores:
+                scores[symbol_name] = 0
+            scores[symbol_name] += 2  # 뉴스 아이템 언급: +2
+    
     # 헤드라인에서 종목명 찾기
     for headline in digest.top_headlines:
         found_symbols = find_symbols_in_text(headline)
@@ -296,14 +305,48 @@ def create_stock_candidates(
     # 1. 후보 종목 추출 및 점수 계산
     candidate_scores = extract_stock_candidates(digest, news_items, overnight_signals=overnight_signals)
     
+    logger.info(f"추출된 종목 후보 수: {len(candidate_scores)}개")
+    if candidate_scores:
+        top_5 = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+        logger.info(f"상위 5개 후보: {[(name, score) for name, score in top_5]}")
+    
     if not candidate_scores:
-        # 후보가 없으면 섹터 대표주로 fallback
-        fallback_stocks = ["삼성전자", "SK하이닉스", "LG에너지솔루션"]
-        for stock_name in fallback_stocks:
-            code = get_symbol_code(stock_name)
-            if code:
-                candidate_scores[stock_name] = 1
-                break
+        # 후보가 없으면 섹터별 대표주로 fallback (더 다양하게)
+        logger.warning("뉴스에서 종목을 찾지 못해 섹터별 대표주로 fallback")
+        
+        # 섹터별 대표주 매핑
+        sector_fallbacks = {
+            "반도체/AI": ["삼성전자", "SK하이닉스"],
+            "2차전지/원자재": ["LG에너지솔루션", "삼성SDI", "LG화학"],
+            "바이오/헬스": ["셀트리온", "삼성바이오로직스"],
+            "IT/플랫폼": ["NAVER", "카카오"],
+            "자동차": ["현대차", "기아"],
+            "금융": ["KB금융", "신한지주"],
+        }
+        
+        # digest의 섹터를 확인하여 해당 섹터의 대표주 선택
+        found_sector_fallback = False
+        for sector, fallback_stocks in sector_fallbacks.items():
+            if sector in digest.sector_bullets:
+                for stock_name in fallback_stocks:
+                    code = get_symbol_code(stock_name)
+                    if code:
+                        candidate_scores[stock_name] = 1
+                        logger.info(f"섹터 '{sector}' 기반 fallback: {stock_name}")
+                        found_sector_fallback = True
+                        break
+                if found_sector_fallback:
+                    break
+        
+        # 섹터별 fallback도 실패하면 기본 fallback
+        if not candidate_scores:
+            fallback_stocks = ["삼성전자", "SK하이닉스", "LG에너지솔루션"]
+            for stock_name in fallback_stocks:
+                code = get_symbol_code(stock_name)
+                if code:
+                    candidate_scores[stock_name] = 1
+                    logger.warning(f"기본 fallback 사용: {stock_name}")
+                    break
     
     # 2. 점수 상위 종목 선택 (중복 종목코드 제거)
     sorted_candidates = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)
