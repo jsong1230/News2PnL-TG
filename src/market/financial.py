@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import logging
 
 from src.utils.retry import retry_with_backoff, classify_error
+from src.market.kis_auth import get_kis_base_url, get_kis_headers
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +51,44 @@ def fetch_financial_metrics(
     """
     metrics = FinancialMetrics(symbol=symbol_code, name=stock_name)
     
-    if provider != "yahoo":
-        metrics.error = f"지원하지 않는 provider: {provider}"
-        return metrics
-    
+    # KIS API를 시도할 조건 (provider가 "kis"거나 "yahoo"인 경우에도 한국 주식이면 우선 시도 가능하지만 
+    # 여기서는 명시적 "kis" 설정 시 동작하도록 함)
+    if provider == "kis":
+        # Domestic Stock 전용 (6자리 숫자)
+        if symbol_code.isdigit() and len(symbol_code) == 6:
+            base_url = get_kis_base_url()
+            url = f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
+            headers = get_kis_headers(tr_id="FHKST01010100")
+            params = {
+                "FID_COND_MRKT_DIV": "J",
+                "FID_INPUT_ISCD": symbol_code
+            }
+            
+            try:
+                import requests
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                if data.get("rt_cd") == "0":
+                    output = data.get("output", {})
+                    if output.get("per"):
+                        try:
+                            val = float(output["per"])
+                            if val != 0:
+                                metrics.per = val
+                        except: pass
+                    # KIS Current Price API에서는 부채비율/성장률을 직접 주지 않으므로 
+                    # 여기서 일부 채우고 나머지는 Yahoo에서 보완하도록 유도
+                else:
+                    logger.debug(f"{stock_name} ({symbol_code}): KIS 연동 실패 - {data.get('msg1')}")
+            except Exception as e:
+                logger.debug(f"{stock_name} ({symbol_code}): KIS 조회 중 예외 - {e}")
+
+    # KIS에서 데이터를 다 못 채웠거나 provider가 yahoo인 경우 (또는 KIS 실패 시)
     try:
         import yfinance as yf
-        
+
         # Yahoo Finance 심볼 변환
         yahoo_symbols = [f"{symbol_code}.KS", f"{symbol_code}.KQ"]
         

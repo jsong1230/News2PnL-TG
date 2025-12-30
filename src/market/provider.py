@@ -6,6 +6,7 @@ import logging
 
 from src.market.base import MarketProvider, OHLC
 from src.utils.retry import retry_with_backoff, classify_error
+from src.market.kis_auth import get_kis_base_url, get_kis_headers
 
 logger = logging.getLogger(__name__)
 
@@ -282,19 +283,155 @@ class YahooMarketProvider(MarketProvider):
         raise ValueError(f"시세 조회 실패: {symbol} (시도한 심볼: {', '.join(yahoo_symbols)})")
 
 
+class KISMarketProvider(MarketProvider):
+    """한국투자증권(KIS) 시세 제공자"""
+    
+    def __init__(self):
+        import requests
+        self.requests = requests
+        self.base_url = get_kis_base_url()
+        
+    def get_price(self, symbol: str, date: Optional[datetime] = None) -> float:
+        """현재가(또는 특정일 종가) 조회"""
+        ohlc = self.get_ohlc(symbol, date)
+        return ohlc.close
+        
+    def get_ohlc(self, symbol: str, date: Optional[datetime] = None) -> OHLC:
+        """OHLC 및 당일 데이터 조회"""
+        # Domestic Stock 전용 (6자리 숫자)
+        if not symbol.isdigit() or len(symbol) != 6:
+            logger.warning(f"KISMarketProvider는 6자리 국내 종목코드만 지원합니다: {symbol}")
+            raise ValueError(f"지원하지 않는 종목코드 형식: {symbol}")
+            
+        # 1. 특정 날짜 조회 (Daily Chart API 사용)
+        # Morning Report는 보통 '오늘 오전'에 '어제 종가' 혹은 '현재가'를 필요로 함
+        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        headers = get_kis_headers(tr_id="FHKST03010100")
+        
+        # 날짜 포맷 (YYYYMMDD)
+        if date:
+            target_date_str = date.strftime("%Y%m%d")
+        else:
+            target_date_str = datetime.now().strftime("%Y%m%d")
+            
+        params = {
+            "FID_COND_MRKT_DIV": "J",
+            "FID_INPUT_ISCD": symbol,
+            "FID_PERIOD_DIV": "D",
+            "FID_ORG_ADJ_PRC": "0"
+        }
+        
+        try:
+            logger.info(f"KIS 시세 조회 시도: {symbol} (날짜: {target_date_str})")
+            response = self.requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get("rt_cd") != "0":
+                logger.error(f"KIS API 오류: {data.get('msg1')}")
+                raise ValueError(f"KIS API 오류: {data.get('msg1')}")
+                
+            output2 = data.get("output2", [])
+            if not output2:
+                raise ValueError(f"KIS 데이터 없음: {symbol}")
+                
+            # 가장 최신 데이터 (첫 번째 항목)
+            row = output2[0]
+            
+            # target_date가 지정된 경우 해당 날짜 찾기 (없으면 최신 데이터가 target_date보다 과거인지 확인)
+            if date:
+                # KIS output2는 역순(최신순) 정렬됨
+                found_row = None
+                for r in output2:
+                    if r["stck_bsop_date"] <= target_date_str:
+                        found_row = r
+                        break
+                if not found_row:
+                    raise ValueError(f"KIS {target_date_str} 이전 데이터 없음")
+                row = found_row
+                
+            ohlc = OHLC(
+                open=float(row["stck_oprc"]),
+                high=float(row["stck_hgpr"]),
+                low=float(row["stck_lwpr"]),
+                close=float(row["stck_clpr"]),
+                volume=int(row["acml_vol"]) if row.get("acml_vol") else 0,
+                change_rate=float(row["prdy_ctrt"]) if row.get("prdy_ctrt") else None
+            )
+            
+            # Sanity check
+            is_valid, error_msg = validate_ohlc(ohlc, symbol)
+            if not is_valid:
+                logger.warning(f"KIS 데이터 오류 ({symbol}): {error_msg}")
+                # KIS 데이터가 오판일 수 있으므로 그대로 반환하되 로그 남김
+                
+            return ohlc
+            
+        except Exception as e:
+            logger.error(f"KIS 시세 조회 실패 ({symbol}): {e}")
+            raise
+
+
+class HybridMarketProvider(MarketProvider):
+    """여러 제공자를 순차적으로 시도하는 하이브리드 제공자"""
+    
+    def __init__(self, providers: list):
+        self.providers = providers
+        
+    def get_price(self, symbol: str, date: Optional[datetime] = None) -> float:
+        """순차적으로 시도하여 첫 번째 성공한 종가 반환"""
+        last_error = None
+        for provider in self.providers:
+            try:
+                return provider.get_price(symbol, date)
+            except Exception as e:
+                logger.debug(f"{type(provider).__name__} get_price 실패: {e}")
+                last_error = e
+                continue
+        raise last_error or ValueError(f"모든 제공자 시세 조회 실패: {symbol}")
+        
+    def get_ohlc(self, symbol: str, date: Optional[datetime] = None) -> OHLC:
+        """순차적으로 시도하여 첫 번째 성공한 OHLC 반환"""
+        last_error = None
+        for provider in self.providers:
+            try:
+                return provider.get_ohlc(symbol, date)
+            except Exception as e:
+                logger.debug(f"{type(provider).__name__} get_ohlc 실패: {e}")
+                last_error = e
+                continue
+        raise last_error or ValueError(f"모든 제공자 OHLC 조회 실패: {symbol}")
+
+
 def get_market_provider(provider_name: str = "dummy") -> MarketProvider:
     """
     시세 제공자 팩토리
     
     Args:
-        provider_name: 제공자 이름 ("dummy" | "yahoo")
-    
-    Returns:
-        MarketProvider 인스턴스
+        provider_name: 제공자 이름 ("dummy" | "yahoo" | "kis" | "kis,yahoo" 등)
     """
-    if provider_name == "dummy":
+    from src.config import MARKET_PROVIDER as DEFAULT_PROVIDER
+    
+    name = provider_name or DEFAULT_PROVIDER
+    
+    # 쉼표로 구분된 경우 HybridMarketProvider 생성
+    if "," in name:
+        names = [n.strip() for n in name.split(",") if n.strip()]
+        providers = []
+        for n in names:
+            try:
+                providers.append(get_market_provider(n))
+            except ValueError:
+                logger.warning(f"지원하지 않는 시세 제공자 무시: {n}")
+        if not providers:
+            return DummyMarketProvider()
+        return HybridMarketProvider(providers)
+    
+    if name == "dummy":
         return DummyMarketProvider()
-    elif provider_name == "yahoo":
+    elif name == "yahoo":
         return YahooMarketProvider()
+    elif name == "kis":
+        return KISMarketProvider()
     else:
-        raise ValueError(f"지원하지 않는 시세 제공자: {provider_name}")
+        raise ValueError(f"지원하지 않는 시세 제공자: {name}")

@@ -26,6 +26,12 @@ GOOGLE_NEWS_MAX_PER_QUERY = int(os.getenv("GOOGLE_NEWS_MAX_PER_QUERY", "30"))  #
 NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "")
 NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
 
+# 한국투자증권(KIS) API 설정
+KIS_APP_KEY = os.getenv("KIS_APP_KEY", "")
+KIS_APP_SECRET = os.getenv("KIS_APP_SECRET", "")
+KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO", "")  # 8자리-2자리 (예: 12345678-01)
+KIS_CANOE = os.getenv("KIS_CANOE", "virtual")  # "real" 또는 "virtual" (기본값: 모의서버)
+
 # 기본 쿼리 세트 (GOOGLE_NEWS_QUERIES가 비어있을 때 사용)
 DEFAULT_NEWS_QUERIES = [
     "미국 증시", "나스닥", "S&P500", "연준 금리", "달러 환율", "유가",
