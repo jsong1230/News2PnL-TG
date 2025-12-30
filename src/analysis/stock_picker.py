@@ -315,42 +315,46 @@ def create_stock_candidates(
         logger.info(f"상위 5개 후보: {[(name, score) for name, score in top_5]}")
     
     if not candidate_scores:
-        # 후보가 없으면 섹터별 대표주로 fallback (더 다양하게)
+        # 후보가 없으면 섹터별 대표주로 fallback (더 다양하고 무작위성 부여)
         logger.warning("뉴스에서 종목을 찾지 못해 섹터별 대표주로 fallback")
+        import random
         
-        # 섹터별 대표주 매핑
-        sector_fallbacks = {
-            "반도체/AI": ["삼성전자", "SK하이닉스"],
-            "2차전지/원자재": ["LG에너지솔루션", "삼성SDI", "LG화학"],
-            "바이오/헬스": ["셀트리온", "삼성바이오로직스"],
-            "IT/플랫폼": ["NAVER", "카카오"],
-            "자동차": ["현대차", "기아"],
-            "금융": ["KB금융", "신한지주"],
+        # 섹터별 대표주 풀 확장
+        sector_pools = {
+            "반도체/AI": ["삼성전자", "SK하이닉스", "한미반도체", "리노공업", "가온칩스"],
+            "2차전지/에너지": ["LG에너지솔루션", "삼성SDI", "에코프로비엠", "에코프로", "엘앤에프"],
+            "바이오/헬스": ["셀트리온", "삼성바이오로직스", "알테오젠", "유한양행"],
+            "IT/플랫폼": ["NAVER", "카카오", "카카오뱅크"],
+            "자동차": ["현대차", "기아", "현대모비스"],
+            "금융": ["KB금융", "신한지주", "하나금융지주"],
         }
         
-        # digest의 섹터를 확인하여 해당 섹터의 대표주 선택
-        found_sector_fallback = False
-        for sector, fallback_stocks in sector_fallbacks.items():
-            if sector in digest.sector_bullets:
-                for stock_name in fallback_stocks:
+        # 1. 뉴스 다이제스트에 언급된 섹터 우선
+        target_sectors = list(digest.sector_bullets.keys())
+        # 2. 언급된 섹터가 없으면 모든 섹터에서 무작위 선택
+        if not target_sectors:
+            target_sectors = list(sector_pools.keys())
+        
+        random.shuffle(target_sectors)
+        
+        fallback_count = 0
+        for sector in target_sectors:
+            if sector in sector_pools:
+                pool = sector_pools[sector].copy()
+                random.shuffle(pool)
+                for stock_name in pool:
                     code = get_symbol_code(stock_name)
                     if code:
                         candidate_scores[stock_name] = 1
-                        logger.info(f"섹터 '{sector}' 기반 fallback: {stock_name}")
-                        found_sector_fallback = True
-                        break
-                if found_sector_fallback:
-                    break
+                        logger.info(f"섹터 '{sector}' 기반 fallback 추가: {stock_name}")
+                        fallback_count += 1
+                        break # 섹터당 1개만
+            if fallback_count >= 3:
+                break
         
-        # 섹터별 fallback도 실패하면 기본 fallback
+        # 최종 안전장치 (위의 로직이 모두 실패할 경우에만)
         if not candidate_scores:
-            fallback_stocks = ["삼성전자", "SK하이닉스", "LG에너지솔루션"]
-            for stock_name in fallback_stocks:
-                code = get_symbol_code(stock_name)
-                if code:
-                    candidate_scores[stock_name] = 1
-                    logger.warning(f"기본 fallback 사용: {stock_name}")
-                    break
+            candidate_scores["삼성전자"] = 1
     
     # 2. 점수 상위 종목 선택 (중복 종목코드 제거)
     sorted_candidates = sorted(candidate_scores.items(), key=lambda x: x[1], reverse=True)

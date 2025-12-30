@@ -101,15 +101,19 @@ class YahooMarketProvider(MarketProvider):
     
     def _convert_symbol(self, symbol_code: str) -> list:
         """
-        한국 종목코드를 Yahoo Finance 심볼로 변환 (시도 순서)
+        종목코드를 Yahoo Finance 심볼로 변환 (시도 순서)
         
         Args:
-            symbol_code: 종목코드 (예: "005930")
+            symbol_code: 종목코드 (예: "005930", "^IXIC", "NVDA")
         
         Returns:
-            시도할 Yahoo Finance 심볼 리스트 (예: ["005930.KS", "005930.KQ"])
+            시도할 Yahoo Finance 심볼 리스트
         """
-        # .KS (KOSPI) 우선, 실패 시 .KQ (KOSDAQ) 시도
+        # 1. 이미 야후 심볼 형식인 경우 (숫자 6자리가 아님)
+        if not (symbol_code.isdigit() and len(symbol_code) == 6):
+            return [symbol_code]
+            
+        # 2. 한국 종목코드(6자리 숫자)인 경우: .KS (KOSPI) 우선, 실패 시 .KQ (KOSDAQ) 시도
         return [f"{symbol_code}.KS", f"{symbol_code}.KQ"]
     
     @retry_with_backoff(
