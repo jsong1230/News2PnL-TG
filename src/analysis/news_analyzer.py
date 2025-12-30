@@ -510,18 +510,30 @@ def classify_sector(title: str, content: str = "") -> str:
     for sector, keywords in SECTOR_KEYWORDS.items():
         if sector == "코인/크립토":  # 이미 처리됨
             continue
+        # 바이오/헬스는 이미 처리됨 (여기는 루프에서 제외하거나 그냥 둠)
+        if sector == "바이오/헬스":
+            continue
         if any(keyword.lower() in text for keyword in keywords):
             return sector
+    
+    # 개별 종목 매칭 추가 (섹터 키워드에 없는 특정 우량주/이슈주)
+    if any(kw in text for kw in ["애플", "아이폰", "apple", "iphone"]):
+        return "테크/가전"
+    if any(kw in text for kw in ["테슬라", "tesla", "자율주행", "ev"]):
+        return "자동차/모빌리티"
+    if any(kw in text for kw in ["방산", "k-방산", "현대로템", "한화에어로"]):
+        return "방산/우주"
     
     return "기타"
 
 
-def generate_macro_summary(news_items: List[NewsItem]) -> str:
+def generate_macro_summary(news_items: List[NewsItem], overnight_signals: Optional[Dict] = None) -> str:
     """
-    거시 요약 생성 (키워드 기반 템플릿)
+    거시 요약 생성 (정량 데이터 + 뉴스 컨텐츠 결합)
     
     Args:
         news_items: 뉴스 아이템 리스트
+        overnight_signals: 오버나이트 선행 신호 (실제 수치 포함)
     
     Returns:
         5줄 이내 요약 텍스트
@@ -529,77 +541,73 @@ def generate_macro_summary(news_items: List[NewsItem]) -> str:
     if not news_items:
         return "수집된 뉴스가 없습니다."
     
-    # 키워드 빈도 계산
+    # 1. 정량 데이터 요약 (Overnight Signals)
+    quantitative_lines = []
+    if overnight_signals:
+        indicators = [
+            ("S&P500", "S&P500"), ("나스닥", "Nasdaq"), 
+            ("엔비디아", "NVDA"), ("달러/원", "USDKRW"),
+            ("비트코인", "BTC"), ("VIX", "VIX")
+        ]
+        
+        sig_texts = []
+        for name, key in indicators:
+            sig = overnight_signals.get(key)
+            if sig and sig.success and sig.pct_change is not None:
+                sign = "+" if sig.pct_change > 0 else ""
+                sig_texts.append(f"{name}({sign}{sig.pct_change:.1f}%)")
+        
+        if sig_texts:
+            quantitative_lines.append(f"• 시장 지표: {', '.join(sig_texts[:4])}")
+
+    # 2. 정성 데이터 분석 (뉴스 컨텐츠)
     all_text = " ".join([item.title + " " + (item.content or "") for item in news_items])
     all_text_lower = all_text.lower()
     
-    # 주요 거시 지표 키워드 체크
-    macro_indicators = {
-        "S&P": ["s&p", "sp500", "s&p 500", "s&p500"],
-        "나스닥": ["나스닥", "nasdaq", "nasdaq 100"],
-        "금리": ["금리", "연준", "fed", "기준금리", "인플레이션", "인플레", "cpi"],
-        "달러": ["달러", "dxy", "달러인덱스", "원달러", "환율"],
-        "유가": ["유가", "원유", "wti", "브렌트", "석유"],
-        "비트코인": ["비트코인", "btc", "비트코인 etf", "비트코인 현물 etf"],
+    # 주요 테마 추출
+    themes = {
+        "금리/통화정책": ["금리", "연준", "fed", "기준금리", "cpi", "인플레이션"],
+        "AI/반도체": ["ai", "반도체", "엔비디아", "hbm", "칩", "llm"],
+        "경기/성장": ["경기", "성장", "실적", "수출", "gdp"],
+        "지정학적 리스크": ["지정학", "전쟁", "관세", "무역", "중국", "러시아"]
     }
     
-    found_indicators = []
-    for indicator, keywords in macro_indicators.items():
+    found_themes = []
+    for theme, keywords in themes.items():
         if any(kw in all_text_lower for kw in keywords):
-            found_indicators.append(indicator)
+            found_themes.append(theme)
     
-    # 키워드 빈도 계산
-    keywords = {
-        "상승": ["상승", "급등", "반등", "회복", "개선", "증가"],
-        "하락": ["하락", "급락", "폭락", "약세", "감소", "축소"],
-        "긍정": ["긍정", "호재", "기대", "전망", "낙관", "성장"],
-        "부정": ["부정", "악재", "우려", "불안", "비관", "위험"],
-    }
-    
-    keyword_counts = {}
-    for category, words in keywords.items():
-        count = sum(1 for word in words if word in all_text_lower)
-        keyword_counts[category] = count
-    
-    # 템플릿 기반 요약 생성
+    # 3. 종합 요약 구성
     lines = []
+    if quantitative_lines:
+        lines.extend(quantitative_lines)
     
-    # 1. 거시 지표 언급
-    if found_indicators:
-        indicators_str = ", ".join(found_indicators[:3])
-        lines.append(f"• 주요 거시 지표: {indicators_str}")
+    if found_themes:
+        lines.append(f"• 주요 테마: {', '.join(found_themes[:3])}")
     
-    # 2. 전체 톤
-    if keyword_counts.get("긍정", 0) > keyword_counts.get("부정", 0):
+    # 긍정/부정 톤 분석
+    pos_count = sum(all_text_lower.count(kw) for kw in ["상승", "개선", "기대", "호재"])
+    neg_count = sum(all_text_lower.count(kw) for kw in ["하락", "우려", "불안", "악재"])
+    
+    if pos_count > neg_count * 1.2:
         tone = "긍정적"
-    elif keyword_counts.get("부정", 0) > keyword_counts.get("긍정", 0):
-        tone = "신중"
+    elif neg_count > pos_count * 1.2:
+        tone = "신중/부정적"
     else:
-        tone = "중립"
+        tone = "혼조세"
     
-    lines.append(f"• 전반적 톤: {tone}적 분위기")
+    lines.append(f"• 시장 분위기: {tone} ({pos_count}:{neg_count})")
     
-    # 3. 주요 섹터
-    sector_counts = defaultdict(int)
-    for item in news_items:
-        sector = classify_sector(item.title, item.content or "")
-        if sector != "기타":
-            sector_counts[sector] += 1
+    # 영향력 큰 뉴스 하나를 요약문에 반영 (가장 점수 높은 뉴스)
+    if news_items:
+        # 이 시점에 news_items는 이미 정렬되어 있을 가능성이 높음
+        # (create_digest 내부에서 호출될 때 정렬된 것을 넘겨줄 예정)
+        top_news = news_items[0].title
+        if len(top_news) > 40:
+            top_news = top_news[:37] + "..."
+        lines.append(f"• 핵심 뉴스: {top_news}")
     
-    if sector_counts:
-        top_sectors = sorted(sector_counts.items(), key=lambda x: x[1], reverse=True)[:3]
-        sector_names = ", ".join([s for s, _ in top_sectors])
-        lines.append(f"• 주요 섹터: {sector_names}")
-    
-    # 4. 시장 동향
-    if keyword_counts.get("상승", 0) > keyword_counts.get("하락", 0):
-        lines.append("• 시장 동향: 상승 기대감 우세")
-    elif keyword_counts.get("하락", 0) > keyword_counts.get("상승", 0):
-        lines.append("• 시장 동향: 하락 우려 존재")
-    else:
-        lines.append("• 시장 동향: 혼조세")
-    
-    return "\n".join(lines[:5])  # 최대 5줄
+    return "\n".join(lines[:5])
 
 
 def assess_korea_impact(news_items: List[NewsItem]) -> tuple[str, str]:
@@ -737,19 +745,49 @@ def create_digest(news_items: List[NewsItem],
     selected_items.sort(key=lambda x: x.published_at, reverse=True)
     top_headlines = [item.title for item in selected_items[:8]]
     
-    # 6. 거시 요약 (전체 unique_news 기준)
-    macro_summary = generate_macro_summary(unique_news)
+    # 6. 거시 요약 (상위 20개 뉴스 + 지표 기준)
+    macro_summary = generate_macro_summary(
+        [item for item, _ in scored_news[:20]], 
+        overnight_signals=overnight_signals
+    )
     
-    # 7. 섹터별 분류 (전체 unique_news 기준)
+    # 7. 섹터별 분류 및 톤 분석
     sector_bullets: Dict[str, List[str]] = defaultdict(list)
+    sector_sentiment_counts = defaultdict(lambda: {"pos": 0, "neg": 0})
+    
     for item in unique_news:
         sector = classify_sector(item.title, item.content or "")
         if len(sector_bullets[sector]) < 3:  # 섹터당 최대 3개
             sector_bullets[sector].append(item.title)
+        
+        # 섹터별 감성 집계
+        title_lower = item.title.lower()
+        sector_sentiment_counts[sector]["pos"] += sum(title_lower.count(kw) for kw in ["상승", "기대", "호재"])
+        sector_sentiment_counts[sector]["neg"] += sum(title_lower.count(kw) for kw in ["하락", "우려", "악재"])
     
-    # "기타" 제외하고 상위 5개 섹터만
+    # 섹터 우선순위 결정: 변동성 큰 지표 관련 섹터 우선 + 뉴스 많은 섹터
+    priority_sectors = []
+    if overnight_signals:
+        nvda = overnight_signals.get("NVDA")
+        if nvda and nvda.success and abs(nvda.pct_change or 0) > 2:
+            priority_sectors.append("반도체/AI")
+            
+        btc = overnight_signals.get("BTC")
+        if btc and btc.success and abs(btc.pct_change or 0) > 2:
+            priority_sectors.append("코인/크립토")
+            
+    # "기타" 제외하고 정렬 (우선순위 섹터 + 뉴스 개수 순)
+    def sector_sort_key(s_tuple):
+        s_name = s_tuple[0]
+        score = len(s_tuple[1])
+        if s_name in priority_sectors:
+            score += 10
+        return score
+
     sector_items = [(k, v) for k, v in sector_bullets.items() if k != "기타"]
-    sector_items.sort(key=lambda x: len(x[1]), reverse=True)
+    sector_items.sort(key=sector_sort_key, reverse=True)
+    
+    # 섹터 결과 재구성 (감성 정보 포함 가능하지만 현재는 불렛만)
     sector_bullets = dict(sector_items[:5])
     
     # 8. 한국장 영향도

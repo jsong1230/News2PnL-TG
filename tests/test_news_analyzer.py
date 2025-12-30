@@ -22,6 +22,7 @@ from src.analysis.news_analyzer import (
     classify_sector,
     create_digest,
 )
+from unittest.mock import MagicMock
 from tests.conftest import create_news_item
 
 
@@ -242,14 +243,14 @@ class TestClassifySector:
     def test_automobile_sector(self):
         """자동차 섹터"""
         sector = classify_sector("테슬라 전기차 판매 증가", "전기차 관련 뉴스")
-        # 전기차는 2차전지/원자재로 분류될 수 있음
-        assert sector in ["자동차", "2차전지/원자재"]
+        # 새로운 분류 체계: 자동차/모빌리티 또는 2차전지/에너지
+        assert sector in ["자동차/모빌리티", "2차전지/에너지"]
     
     def test_finance_sector(self):
         """금융 섹터"""
         sector = classify_sector("은행 대출 금리 인상", "금융 관련 뉴스")
-        # 금리 관련은 거시/금리/달러로 분류될 수 있음
-        assert sector in ["금융", "거시/금리/달러"]
+        # 금리 관련은 거시/금리/달러, 은행/금융권은 금융/지주
+        assert sector in ["금융/지주", "거시/금리/달러"]
     
     def test_unknown_sector(self):
         """기타 섹터"""
