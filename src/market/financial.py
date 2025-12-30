@@ -48,6 +48,7 @@ def fetch_financial_metrics(
         yahoo_symbols = [f"{symbol_code}.KS", f"{symbol_code}.KQ"]
         
         ticker = None
+        info = None
         for yahoo_symbol in yahoo_symbols:
             try:
                 ticker = yf.Ticker(yahoo_symbol)
@@ -55,7 +56,10 @@ def fetch_financial_metrics(
                 
                 # info가 비어있거나 기본값만 있으면 다음 심볼 시도
                 if info and len(info) > 10:  # 기본 정보 이상이 있는지 확인
+                    logger.debug(f"{stock_name} ({symbol_code}): {yahoo_symbol}에서 재무 데이터 발견 (keys: {len(info)}개)")
                     break
+                else:
+                    logger.debug(f"{stock_name} ({symbol_code}): {yahoo_symbol} info가 비어있음")
             except Exception as e:
                 logger.debug(f"{yahoo_symbol} 재무 데이터 조회 실패: {e}")
                 continue
@@ -101,9 +105,10 @@ def fetch_financial_metrics(
         # 성공 여부 판단 (최소한 하나의 지표라도 있으면 성공)
         if metrics.per is not None or metrics.debt_ratio is not None or metrics.revenue_growth_3y is not None:
             metrics.success = True
+            logger.info(f"{stock_name} ({symbol_code}): 재무 데이터 수집 성공 - PER={metrics.per}, 부채비율={metrics.debt_ratio}%, 성장률={metrics.revenue_growth_3y}%")
         else:
             metrics.error = "재무 지표 데이터 없음"
-            logger.warning(f"{stock_name} ({symbol_code}): 재무 지표 데이터 없음")
+            logger.warning(f"{stock_name} ({symbol_code}): 재무 지표 데이터 없음 (info keys: {list(info.keys())[:10] if info else 'None'})")
     
     except Exception as e:
         metrics.error = str(e)
@@ -142,45 +147,49 @@ def calculate_checklist_scores_from_metrics(
     else:
         scores["business_explainable"] = 1
     
-    # 3) 3년간 실적 성장?
-    if metrics.revenue_growth_3y is not None:
-        if metrics.revenue_growth_3y > 10:  # 10% 이상 성장
-            scores["growth_3y"] = 2
-        elif metrics.revenue_growth_3y > 0:
-            scores["growth_3y"] = 1
+        # 3) 3년간 실적 성장?
+        if metrics.revenue_growth_3y is not None:
+            if metrics.revenue_growth_3y > 10:  # 10% 이상 성장
+                scores["growth_3y"] = 2
+            elif metrics.revenue_growth_3y > 0:
+                scores["growth_3y"] = 1
+            else:
+                scores["growth_3y"] = 0
+            logger.debug(f"{metrics.name}: 매출성장률={metrics.revenue_growth_3y:.1f}% -> 점수={scores['growth_3y']}")
+        elif metrics.earnings_growth_3y is not None:
+            if metrics.earnings_growth_3y > 10:
+                scores["growth_3y"] = 2
+            elif metrics.earnings_growth_3y > 0:
+                scores["growth_3y"] = 1
+            else:
+                scores["growth_3y"] = 0
+            logger.debug(f"{metrics.name}: 이익성장률={metrics.earnings_growth_3y:.1f}% -> 점수={scores['growth_3y']}")
         else:
-            scores["growth_3y"] = 0
-    elif metrics.earnings_growth_3y is not None:
-        if metrics.earnings_growth_3y > 10:
-            scores["growth_3y"] = 2
-        elif metrics.earnings_growth_3y > 0:
-            scores["growth_3y"] = 1
-        else:
-            scores["growth_3y"] = 0
-    else:
-        scores["growth_3y"] = 1  # 데이터 없으면 기본 1점
+            scores["growth_3y"] = 1  # 데이터 없으면 기본 1점
     
-    # 4) PER 10~20?
-    if metrics.per is not None:
-        if 10 <= metrics.per <= 20:
-            scores["per_10_20"] = 2
-        elif 5 <= metrics.per < 10 or 20 < metrics.per <= 30:
-            scores["per_10_20"] = 1
+        # 4) PER 10~20?
+        if metrics.per is not None:
+            if 10 <= metrics.per <= 20:
+                scores["per_10_20"] = 2
+            elif 5 <= metrics.per < 10 or 20 < metrics.per <= 30:
+                scores["per_10_20"] = 1
+            else:
+                scores["per_10_20"] = 0
+            logger.debug(f"{metrics.name}: PER={metrics.per:.2f} -> 점수={scores['per_10_20']}")
         else:
-            scores["per_10_20"] = 0
-    else:
-        scores["per_10_20"] = 1  # 데이터 없으면 기본 1점
+            scores["per_10_20"] = 1  # 데이터 없으면 기본 1점
     
-    # 5) 부채비율 100% 이하?
-    if metrics.debt_ratio is not None:
-        if metrics.debt_ratio <= 100:
-            scores["debt_lt_100"] = 2
-        elif metrics.debt_ratio <= 150:
-            scores["debt_lt_100"] = 1
+        # 5) 부채비율 100% 이하?
+        if metrics.debt_ratio is not None:
+            if metrics.debt_ratio <= 100:
+                scores["debt_lt_100"] = 2
+            elif metrics.debt_ratio <= 150:
+                scores["debt_lt_100"] = 1
+            else:
+                scores["debt_lt_100"] = 0
+            logger.debug(f"{metrics.name}: 부채비율={metrics.debt_ratio:.1f}% -> 점수={scores['debt_lt_100']}")
         else:
-            scores["debt_lt_100"] = 0
-    else:
-        scores["debt_lt_100"] = 1  # 데이터 없으면 기본 1점
+            scores["debt_lt_100"] = 1  # 데이터 없으면 기본 1점
     
     # 6) 살 이유가 명확한가?
     if has_catalyst:

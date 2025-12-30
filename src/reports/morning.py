@@ -384,6 +384,7 @@ def generate_morning_report() -> str:
                 # 체크리스트 점수
                 report += "*체크리스트 점수:*\n"
                 for item, score in stock.checklist_scores.items():
+                    # 재무 데이터 기반 점수인지 표시 (디버그용, 선택적)
                     report += f"  • {item}: {score}/2점\n"
                 report += f"*총점: {stock.total_score}/12점*\n\n"
                 
@@ -403,7 +404,18 @@ def generate_morning_report() -> str:
                 except Exception as e:
                     logger.warning(f"종목 {stock.name} DB 저장 실패: {e}")
             
-            report += "※ 일부 점수는 재무데이터 연동 전 가정치입니다\n\n"
+            # 재무 데이터 사용 여부 확인
+            has_financial_data = any(
+                stock.checklist_scores.get("PER 10~20", 1) != 1 or 
+                stock.checklist_scores.get("부채비율 100% 이하", 1) != 1 or
+                stock.checklist_scores.get("3년간 실적 성장", 1) != 1
+                for stock in watch_stocks
+            )
+            
+            if not has_financial_data:
+                report += "※ 일부 점수는 재무데이터 연동 전 가정치입니다\n\n"
+            else:
+                report += "※ 재무데이터는 실제 데이터 기반 또는 가정치 (종목별 상이)\n\n"
         else:
             logger.info("관찰 종목이 선정되지 않았습니다")
     

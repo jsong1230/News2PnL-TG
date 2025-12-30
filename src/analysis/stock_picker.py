@@ -344,9 +344,11 @@ def create_stock_candidates(
         try:
             financial_metrics = fetch_financial_metrics(code, stock_name, provider="yahoo")
             if financial_metrics.success:
-                logger.debug(f"{stock_name} ({code}): 재무 데이터 수집 성공 - PER={financial_metrics.per}, 부채비율={financial_metrics.debt_ratio}%")
+                logger.info(f"{stock_name} ({code}): 재무 데이터 수집 성공 - PER={financial_metrics.per}, 부채비율={financial_metrics.debt_ratio}%")
+            else:
+                logger.debug(f"{stock_name} ({code}): 재무 데이터 수집 실패 - {financial_metrics.error}")
         except Exception as e:
-            logger.debug(f"{stock_name} ({code}): 재무 데이터 수집 실패 (무시): {e}")
+            logger.warning(f"{stock_name} ({code}): 재무 데이터 수집 예외 발생: {e}")
         
         candidates.append({
             "name": stock_name,
@@ -733,6 +735,7 @@ def pick_watch_stocks(
     
     # 4. 룰 기반 fallback (기존 로직)
     logger.info("룰 기반 종목 선정 사용")
+    # candidates는 이미 재무 데이터가 포함되어 있음
     candidate_scores = {c["name"]: c["score"] for c in candidates}
     
     # 점수 상위 종목 선택
@@ -877,15 +880,17 @@ def pick_watch_stocks(
                 # financial_metrics 딕셔너리를 FinancialMetrics 객체로 변환
                 from src.market.financial import FinancialMetrics
                 fm_dict = candidate["financial_metrics"]
-                financial_metrics = FinancialMetrics(
-                    symbol=code,
-                    name=stock_name,
-                    per=fm_dict.get("per"),
-                    debt_ratio=fm_dict.get("debt_ratio"),
-                    revenue_growth_3y=fm_dict.get("revenue_growth_3y"),
-                    earnings_growth_3y=fm_dict.get("earnings_growth_3y"),
-                    success=fm_dict.get("success", False)
-                )
+                if fm_dict and fm_dict.get("success"):
+                    financial_metrics = FinancialMetrics(
+                        symbol=code,
+                        name=stock_name,
+                        per=fm_dict.get("per"),
+                        debt_ratio=fm_dict.get("debt_ratio"),
+                        revenue_growth_3y=fm_dict.get("revenue_growth_3y"),
+                        earnings_growth_3y=fm_dict.get("earnings_growth_3y"),
+                        success=True
+                    )
+                    logger.info(f"{stock_name} ({code}): 룰 기반에서 재무 데이터 사용 - PER={financial_metrics.per}, 부채비율={financial_metrics.debt_ratio}%")
                 break
         
         # 체크리스트 점수 계산 (재무 데이터 포함)
