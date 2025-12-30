@@ -191,6 +191,13 @@ class YahooMarketProvider(MarketProvider):
             closest_date = max(available_dates)
             closest_idx = date_index.index(closest_date)
             
+            # 실시간성 경고 (요청한 날짜보다 오래된 데이터인 경우)
+            if closest_date < target_date:
+                logger.warning(
+                    f"{yahoo_symbol}: 시세 지연 가능성 - "
+                    f"요청일({target_date}) 대비 최신 데이터({closest_date})가 과거 데이터임"
+                )
+            
             row_data = hist.iloc[closest_idx]
             
             # 등락률 계산 (전일 종가 기준)

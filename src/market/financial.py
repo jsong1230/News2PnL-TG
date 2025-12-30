@@ -196,9 +196,10 @@ def calculate_checklist_scores_from_metrics(
         if metrics.per is not None:
             if 10 <= metrics.per <= 20:
                 scores["per_10_20"] = 2
-            elif 5 <= metrics.per < 10 or 20 < metrics.per <= 30:
+            elif 5 <= metrics.per < 10 or 20 < metrics.per <= 25:
                 scores["per_10_20"] = 1
             else:
+                # PER가 너무 높거나(>25) 너무 낮으면(<5) 0점
                 scores["per_10_20"] = 0
             logger.debug(f"{metrics.name}: PER={metrics.per:.2f} -> 점수={scores['per_10_20']}")
         else:
@@ -211,6 +212,7 @@ def calculate_checklist_scores_from_metrics(
             elif metrics.debt_ratio <= 150:
                 scores["debt_lt_100"] = 1
             else:
+                # 부채비율 150% 초과 시 0점
                 scores["debt_lt_100"] = 0
             logger.debug(f"{metrics.name}: 부채비율={metrics.debt_ratio:.1f}% -> 점수={scores['debt_lt_100']}")
         else:
