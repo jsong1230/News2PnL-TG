@@ -2,9 +2,12 @@
 from typing import Optional, Dict
 from dataclasses import dataclass
 import logging
+from functools import lru_cache
+from datetime import date
 
 from src.utils.retry import retry_with_backoff, classify_error
 from src.market.kis_auth import get_kis_base_url, get_kis_headers
+from src.database import upsert_symbol, get_financial_metrics, upsert_financial_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -36,141 +39,120 @@ def fetch_financial_metrics(
     provider: str = "yahoo"
 ) -> FinancialMetrics:
     """
-    재무 지표 수집 (재시도 로직 포함)
-    
-    Args:
-        symbol_code: 종목코드 (예: "005930")
-        stock_name: 종목명 (예: "삼성전자")
-        provider: 데이터 제공자 (현재는 "yahoo"만 지원)
-    
-    Returns:
-        FinancialMetrics 객체
-    
-    Note:
-        네트워크 오류 시 exponential backoff로 최대 2회 재시도
+    재무 지표 수집 (캐싱 및 재시도 로직 포함)
+    """
+    return _fetch_financial_metrics_cached(symbol_code, stock_name, provider, date.today().isoformat())
+
+
+@lru_cache(maxsize=128)
+def _fetch_financial_metrics_cached(
+    symbol_code: str,
+    stock_name: str,
+    provider: str,
+    today_str: str
+) -> FinancialMetrics:
+    """
+    캐시 레이어를 포함한 실제 수집 로직
     """
     metrics = FinancialMetrics(symbol=symbol_code, name=stock_name)
+    symbol_id = None
     
-    # KIS API를 시도할 조건 (provider가 "kis"거나 "yahoo"인 경우에도 한국 주식이면 우선 시도 가능하지만 
-    # 여기서는 명시적 "kis" 설정 시 동작하도록 함)
+    # 1. DB 캐시 확인
+    try:
+        symbol_id = upsert_symbol(stock_name, symbol_code)
+        cached = get_financial_metrics(symbol_id, today_str)
+        if cached:
+            metrics.per = cached["per"]
+            metrics.debt_ratio = cached["debt_ratio"]
+            metrics.revenue_growth_3y = cached["revenue_growth_3y"]
+            metrics.earnings_growth_3y = cached["earnings_growth_3y"]
+            metrics.success = True
+            logger.debug(f"DB 캐시 히트: {stock_name} ({symbol_code})")
+            return metrics
+    except Exception as e:
+        logger.warning(f"DB 캐시 조회 실패: {e}")
+
+    # 2. 실제 API 호출 로직
+    # KIS API 시도
     if provider == "kis":
-        # Domestic Stock 전용 (6자리 숫자)
         if symbol_code.isdigit() and len(symbol_code) == 6:
             base_url = get_kis_base_url()
             url = f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
             headers = get_kis_headers(tr_id="FHKST01010100")
-            params = {
-                "FID_COND_MRKT_DIV": "J",
-                "FID_INPUT_ISCD": symbol_code
-            }
-            
+            params = {"FID_COND_MRKT_DIV": "J", "FID_INPUT_ISCD": symbol_code}
             try:
                 import requests
                 response = requests.get(url, headers=headers, params=params, timeout=10)
                 response.raise_for_status()
                 data = response.json()
-                
                 if data.get("rt_cd") == "0":
                     output = data.get("output", {})
                     if output.get("per"):
                         try:
                             val = float(output["per"])
-                            if val != 0:
-                                metrics.per = val
+                            if val != 0: metrics.per = val
                         except: pass
-                    # KIS Current Price API에서는 부채비율/성장률을 직접 주지 않으므로 
-                    # 여기서 일부 채우고 나머지는 Yahoo에서 보완하도록 유도
                 else:
                     logger.debug(f"{stock_name} ({symbol_code}): KIS 연동 실패 - {data.get('msg1')}")
             except Exception as e:
                 logger.debug(f"{stock_name} ({symbol_code}): KIS 조회 중 예외 - {e}")
 
-    # KIS에서 데이터를 다 못 채웠거나 provider가 yahoo인 경우 (또는 KIS 실패 시)
+    # Yahoo Finance 시도
     try:
         import yfinance as yf
-
-        # Yahoo Finance 심볼 변환
         yahoo_symbols = [f"{symbol_code}.KS", f"{symbol_code}.KQ"]
-        
         ticker = None
         info = None
         for yahoo_symbol in yahoo_symbols:
             try:
                 ticker = yf.Ticker(yahoo_symbol)
                 info = ticker.info
-                
-                # info가 비어있거나 기본값만 있으면 다음 심볼 시도
-                if info and len(info) > 10:  # 기본 정보 이상이 있는지 확인
-                    logger.debug(f"{stock_name} ({symbol_code}): {yahoo_symbol}에서 재무 데이터 발견 (keys: {len(info)}개)")
-                    break
-                else:
-                    logger.debug(f"{stock_name} ({symbol_code}): {yahoo_symbol} info가 비어있음")
+                if info and len(info) > 10: break
             except Exception as e:
                 logger.debug(f"{yahoo_symbol} 재무 데이터 조회 실패: {e}")
                 continue
         
-        if not ticker:
-            metrics.error = "티커 초기화 실패"
-            return metrics
-        
-        info = ticker.info
-        
-        # PER (Price-to-Earnings Ratio)
-        # trailingPE 또는 forwardPE 사용
-        if "trailingPE" in info and info["trailingPE"]:
-            metrics.per = float(info["trailingPE"])
-        elif "forwardPE" in info and info["forwardPE"]:
-            metrics.per = float(info["forwardPE"])
-        
-        # 부채비율 (Debt-to-Equity Ratio)
-        # debtToEquity를 부채비율로 사용 (실제로는 부채/자본비율이지만 근사치로 사용)
-        if "debtToEquity" in info and info["debtToEquity"]:
-            debt_to_equity = float(info["debtToEquity"])
-            # debtToEquity를 부채비율(%)로 변환 (부채/자본 * 100)
-            metrics.debt_ratio = debt_to_equity * 100
-        elif "totalDebt" in info and "totalStockholderEquity" in info:
-            total_debt = info.get("totalDebt")
-            total_equity = info.get("totalStockholderEquity")
-            if total_debt and total_equity and total_equity > 0:
-                metrics.debt_ratio = (total_debt / total_equity) * 100
-        
-        # 3년 성장률
-        # revenueGrowth (연간 매출 성장률) 또는 earningsGrowth 사용
-        # 3년치 데이터가 없으므로 연간 성장률을 근사치로 사용
-        if "revenueGrowth" in info and info["revenueGrowth"]:
-            revenue_growth = float(info["revenueGrowth"])
-            # 연간 성장률을 3년 성장률로 근사 (단순화)
-            # 실제로는 과거 3년 데이터가 필요하지만, 연간 성장률을 사용
-            metrics.revenue_growth_3y = revenue_growth * 100  # 퍼센트로 변환
-        
-        if "earningsGrowth" in info and info["earningsGrowth"]:
-            earnings_growth = float(info["earningsGrowth"])
-            metrics.earnings_growth_3y = earnings_growth * 100  # 퍼센트로 변환
-        
-        # 성공 여부 판단 (최소한 하나의 지표라도 있으면 성공)
-        if metrics.per is not None or metrics.debt_ratio is not None or metrics.revenue_growth_3y is not None:
-            metrics.success = True
-            per_str = f"PER={metrics.per:.2f}" if metrics.per else "PER=None"
-            debt_str = f"부채비율={metrics.debt_ratio:.1f}%" if metrics.debt_ratio else "부채비율=None"
-            growth_str = f"성장률={metrics.revenue_growth_3y:.1f}%" if metrics.revenue_growth_3y else f"성장률={metrics.earnings_growth_3y:.1f}%" if metrics.earnings_growth_3y else "성장률=None"
-            logger.info(f"{stock_name} ({symbol_code}): 재무 데이터 수집 성공 - {per_str}, {debt_str}, {growth_str}")
-        else:
-            metrics.error = "재무 지표 데이터 없음"
-            if info:
-                available_keys = [k for k in ["trailingPE", "forwardPE", "debtToEquity", "revenueGrowth", "earningsGrowth"] if k in info]
-                logger.warning(f"{stock_name} ({symbol_code}): 재무 지표 데이터 없음 (사용 가능한 키: {available_keys}, 전체 키 수: {len(info)})")
-            else:
-                logger.warning(f"{stock_name} ({symbol_code}): 재무 지표 데이터 없음 (info가 None)")
-    
+        if ticker and info and len(info) > 10:
+            if "trailingPE" in info and info["trailingPE"]: metrics.per = float(info["trailingPE"])
+            elif "forwardPE" in info and info["forwardPE"]: metrics.per = float(info["forwardPE"])
+            
+            if "debtToEquity" in info and info["debtToEquity"]:
+                metrics.debt_ratio = float(info["debtToEquity"]) * 100
+            elif "totalDebt" in info and "totalStockholderEquity" in info:
+                total_debt = info.get("totalDebt")
+                total_equity = info.get("totalStockholderEquity")
+                if total_debt and total_equity and total_equity > 0:
+                    metrics.debt_ratio = (total_debt / total_equity) * 100
+            
+            if "revenueGrowth" in info and info["revenueGrowth"]:
+                metrics.revenue_growth_3y = float(info["revenueGrowth"]) * 100
+            if "earningsGrowth" in info and info["earningsGrowth"]:
+                metrics.earnings_growth_3y = float(info["earningsGrowth"]) * 100
+            
+            if metrics.per is not None or metrics.debt_ratio is not None or metrics.revenue_growth_3y is not None:
+                metrics.success = True
+                logger.info(f"{stock_name} ({symbol_code}): 재무 데이터 수집 성공 (API)")
     except Exception as e:
         error_type = classify_error(e)
         metrics.error = str(e)
         metrics.error_type = error_type
-        logger.warning(
-            f"{stock_name} ({symbol_code}) 재무 데이터 조회 실패: "
-            f"[{error_type}] {type(e).__name__}: {e}"
-        )
-    
+        logger.warning(f"{stock_name} ({symbol_code}) 재무 데이터 API 조회 실패: {error_type}")
+
+    # 3. 새로운 결과 DB에 저장
+    if metrics.success and symbol_id:
+        try:
+            upsert_financial_metrics(
+                symbol_id=symbol_id,
+                date=today_str,
+                per=metrics.per,
+                debt_ratio=metrics.debt_ratio,
+                revenue_growth_3y=metrics.revenue_growth_3y,
+                earnings_growth_3y=metrics.earnings_growth_3y
+            )
+            logger.debug(f"DB 캐시 저장 완료: {stock_name} ({symbol_code})")
+        except Exception as e:
+            logger.warning(f"DB 캐시 저장 실패: {e}")
+
     return metrics
 
 

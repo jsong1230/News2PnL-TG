@@ -8,6 +8,7 @@ from src.market.base import MarketProvider, OHLC
 from src.utils.retry import retry_with_backoff, classify_error
 from src.market.kis_auth import get_kis_base_url, get_kis_headers
 from src.utils.logging import track_performance, log_with_extra
+from src.database import upsert_symbol, get_daily_price, upsert_daily_price
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +256,21 @@ class YahooMarketProvider(MarketProvider):
             from datetime import date as date_class
             target_date = date_class.today()
         
-        # 시도할 심볼 리스트
+        target_date_str = target_date.isoformat()
+        
+        from datetime import date as date_class
+        today = date_class.today()
+        if target_date < today:
+            try:
+                symbol_id = upsert_symbol(symbol, symbol)
+                cached = get_daily_price(symbol_id, target_date_str)
+                if cached:
+                    logger.debug(f"DB 캐시 히트 (Yahoo): {symbol} ({target_date_str})")
+                    return OHLC(**cached)
+            except Exception as e:
+                logger.warning(f"DB 캐시 조회 실패 (Yahoo): {e}")
+
+        # 2. 시도할 심볼 리스트
         yahoo_symbols = self._convert_symbol(symbol)
         
         for yahoo_symbol in yahoo_symbols:
@@ -280,6 +295,23 @@ class YahooMarketProvider(MarketProvider):
             # 성공
             print(f"  시세 조회 성공: {symbol} -> {yahoo_symbol}, OHLC: O={ohlc.open:.0f}, H={ohlc.high:.0f}, L={ohlc.low:.0f}, C={ohlc.close:.0f}")
             logger.info(f"시세 조회 성공: {symbol} -> {yahoo_symbol}, OHLC: O={ohlc.open:.0f}, H={ohlc.high:.0f}, L={ohlc.low:.0f}, C={ohlc.close:.0f}")
+            
+            if target_date < today:
+                try:
+                    symbol_id = upsert_symbol(symbol, symbol)
+                    upsert_daily_price(
+                        symbol_id=symbol_id,
+                        date=target_date_str,
+                        open_price=ohlc.open,
+                        high=ohlc.high,
+                        low=ohlc.low,
+                        close=ohlc.close,
+                        volume=ohlc.volume,
+                        change_rate=ohlc.change_rate
+                    )
+                except Exception as e:
+                    logger.warning(f"DB 캐시 저장 실패 (Yahoo): {e}")
+                    
             return ohlc
         
         # 모든 심볼 시도 실패
@@ -315,9 +347,24 @@ class KISMarketProvider(MarketProvider):
         
         # 날짜 포맷 (YYYYMMDD)
         if date:
-            target_date_str = date.strftime("%Y%m%d")
+            target_date = date.date() if isinstance(date, datetime) else date
         else:
-            target_date_str = datetime.now().strftime("%Y%m%d")
+            target_date = datetime.now().date()
+            
+        target_date_iso = target_date.isoformat()
+        target_date_str = target_date.strftime("%Y%m%d")
+        
+        from datetime import date as date_class
+        today = date_class.today()
+        if target_date < today:
+            try:
+                symbol_id = upsert_symbol(symbol, symbol)
+                cached = get_daily_price(symbol_id, target_date_iso)
+                if cached:
+                    logger.debug(f"DB 캐시 히트 (KIS): {symbol} ({target_date_iso})")
+                    return OHLC(**cached)
+            except Exception as e:
+                logger.warning(f"DB 캐시 조회 실패 (KIS): {e}")
             
         params = {
             "FID_COND_MRKT_DIV": "J",
@@ -364,6 +411,22 @@ class KISMarketProvider(MarketProvider):
                 change_rate=float(row["prdy_ctrt"]) if row.get("prdy_ctrt") else None
             )
             
+            if target_date < today:
+                try:
+                    symbol_id = upsert_symbol(symbol, symbol)
+                    upsert_daily_price(
+                        symbol_id=symbol_id,
+                        date=target_date_iso,
+                        open_price=ohlc.open,
+                        high=ohlc.high,
+                        low=ohlc.low,
+                        close=ohlc.close,
+                        volume=ohlc.volume,
+                        change_rate=ohlc.change_rate
+                    )
+                except Exception as e:
+                    logger.warning(f"DB 캐시 저장 실패 (KIS): {e}")
+
             # Sanity check
             is_valid, error_msg = validate_ohlc(ohlc, symbol)
             if not is_valid:

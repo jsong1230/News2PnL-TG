@@ -3,8 +3,11 @@ import sqlite3
 from pathlib import Path
 from typing import Optional, List
 from contextlib import contextmanager
+import logging
 
 from src.config import DB_PATH, SCHEMA_PATH
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -66,6 +69,15 @@ def ensure_db():
                     )
                     conn.commit()
                     print("✓ paper_trades 테이블에 market_provider 컬럼 추가 완료")
+                
+                # 마이그레이션: financial_metrics 테이블 추가 체크
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='financial_metrics'"
+                )
+                if not cursor.fetchone():
+                    # 전체 스키마 재실행 (기존 테이블은 IF NOT EXISTS로 보호됨)
+                    init_schema()
+                    print("✓ financial_metrics 테이블 생성 완료")
 
 
 def upsert_symbol(name: str, code: str, market: Optional[str] = None) -> int:
@@ -81,20 +93,25 @@ def upsert_symbol(name: str, code: str, market: Optional[str] = None) -> int:
         symbol_id
     """
     with get_db_connection() as conn:
-        cursor = conn.execute(
-            """
-            INSERT OR REPLACE INTO symbols (symbol, name, market, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            (code, name, market)
-        )
-        # symbol_id 조회
-        cursor = conn.execute(
-            "SELECT id FROM symbols WHERE symbol = ?",
-            (code,)
-        )
+        # 먼저 존재 여부 확인
+        cursor = conn.execute("SELECT id FROM symbols WHERE symbol = ?", (code,))
         row = cursor.fetchone()
-        return row["id"] if row else cursor.lastrowid
+        if row:
+            sid = row["id"]
+            # 업데이트 (이름 등 변경 가능성)
+            conn.execute(
+                "UPDATE symbols SET name = ?, market = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (name, market, sid)
+            )
+        else:
+            # 신규 삽입
+            cursor = conn.execute(
+                "INSERT INTO symbols (symbol, name, market, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (code, name, market)
+            )
+            sid = cursor.lastrowid
+        
+        return sid
 
 
 def upsert_recommendation(
@@ -227,6 +244,79 @@ def upsert_daily_price(
         )
         row = cursor.fetchone()
         return row["id"] if row else cursor.lastrowid
+
+
+def get_daily_price(symbol_id: int, date: str) -> Optional[dict]:
+    """
+    특정 날짜의 일일 시세 조회
+    
+    Args:
+        symbol_id: 종목 ID
+        date: 날짜 (YYYY-MM-DD)
+    
+    Returns:
+        시세 정보 {open, high, low, close, volume, change_rate} 또는 None
+    """
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT open, high, low, close, volume, change_rate
+            FROM daily_prices
+            WHERE symbol_id = ? AND date = ?
+            """,
+            (symbol_id, date)
+        )
+        row = cursor.fetchone()
+        if row:
+            return dict(row)
+        return None
+
+
+def upsert_financial_metrics(
+    symbol_id: int,
+    date: str,
+    per: Optional[float],
+    debt_ratio: Optional[float],
+    revenue_growth_3y: Optional[float],
+    earnings_growth_3y: Optional[float]
+) -> int:
+    """
+    재무 지표 저장
+    """
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR REPLACE INTO financial_metrics
+            (symbol_id, date, per, debt_ratio, revenue_growth_3y, earnings_growth_3y, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (symbol_id, date, per, debt_ratio, revenue_growth_3y, earnings_growth_3y)
+        )
+        cursor = conn.execute(
+            "SELECT id FROM financial_metrics WHERE symbol_id = ? AND date = ?",
+            (symbol_id, date)
+        )
+        row = cursor.fetchone()
+        return row["id"] if row else cursor.lastrowid
+
+
+def get_financial_metrics(symbol_id: int, date: str) -> Optional[dict]:
+    """
+    특정 날짜의 재무 지표 조회
+    """
+    with get_db_connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT per, debt_ratio, revenue_growth_3y, earnings_growth_3y
+            FROM financial_metrics
+            WHERE symbol_id = ? AND date = ?
+            """,
+            (symbol_id, date)
+        )
+        row = cursor.fetchone()
+        if row:
+            return dict(row)
+        return None
 
 
 def upsert_paper_trade(

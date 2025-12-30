@@ -80,9 +80,26 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     FOREIGN KEY (recommendation_id) REFERENCES recommendations(id)
 );
 
+-- 재무 지표 캐시
+CREATE TABLE IF NOT EXISTS financial_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol_id INTEGER NOT NULL,
+    date DATE NOT NULL,
+    per REAL,
+    debt_ratio REAL,
+    revenue_growth_3y REAL,
+    earnings_growth_3y REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (symbol_id) REFERENCES symbols(id),
+    UNIQUE(symbol_id, date)
+);
+
 -- 인덱스
 CREATE INDEX IF NOT EXISTS idx_recommendations_date ON recommendations(date);
 CREATE INDEX IF NOT EXISTS idx_daily_prices_symbol_date ON daily_prices(symbol_id, date);
 CREATE INDEX IF NOT EXISTS idx_paper_trades_date ON paper_trades(date);
 CREATE INDEX IF NOT EXISTS idx_paper_trades_symbol ON paper_trades(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_news_published_at ON news(published_at);
+CREATE INDEX IF NOT EXISTS idx_news_symbols_symbol_id ON news_symbols(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_financial_metrics_symbol_date ON financial_metrics(symbol_id, date);
 
