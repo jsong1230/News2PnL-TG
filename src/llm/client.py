@@ -9,6 +9,7 @@ from src.config import (
     OPENAI_API_KEY, LLM_MODEL, LLM_MAX_TOKENS, LLM_TEMPERATURE,
     LLM_DAILY_BUDGET_TOKENS
 )
+from src.utils.logging import track_performance, log_with_extra
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def get_daily_token_usage() -> Dict[str, Any]:
     }
 
 
+@track_performance("llm_generate_json")
 def generate_json(
     system_prompt: str,
     user_prompt: str,
@@ -73,7 +75,6 @@ def generate_json(
         raise ImportError("openai 패키지가 설치되지 않았습니다. pip install openai")
     
     client = OpenAI(api_key=OPENAI_API_KEY)
-    start_time = time.time()
     
     try:
         # Structured Outputs 사용 (JSON Schema가 있는 경우)
@@ -119,8 +120,6 @@ def generate_json(
             
             result = json.loads(content)
         
-        latency = time.time() - start_time
-        
         # 토큰 사용량
         usage = response.usage
         tokens_used = usage.total_tokens if usage else 0
@@ -129,13 +128,20 @@ def generate_json(
         # 누적 사용량 확인
         daily = get_daily_token_usage()
         
-        logger.info(
+        log_with_extra(
+            logger, logging.INFO,
             f"OpenAI API 호출 완료: model={LLM_MODEL}, tokens={tokens_used}, "
-            f"daily_total={daily['tokens']}/{daily['limit']} ({daily['percent']:.1f}%), latency={latency:.2f}s"
+            f"daily_total={daily['tokens']}/{daily['limit']} ({daily['percent']:.1f}%)",
+            extra={
+                "model": LLM_MODEL,
+                "tokens": tokens_used,
+                "daily_tokens": daily['tokens'],
+                "daily_limit": daily['limit']
+            }
         )
         print(
             f"[LLM] OpenAI 호출: tokens={tokens_used}, "
-            f"누적={daily['tokens']}/{daily['limit']} ({daily['percent']:.1f}%), latency={latency:.2f}s"
+            f"누적={daily['tokens']}/{daily['limit']} ({daily['percent']:.1f}%)"
         )
         
         return result

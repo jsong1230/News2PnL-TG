@@ -7,6 +7,7 @@ import logging
 from src.market.base import MarketProvider, OHLC
 from src.utils.retry import retry_with_backoff, classify_error
 from src.market.kis_auth import get_kis_base_url, get_kis_headers
+from src.utils.logging import track_performance, log_with_extra
 
 logger = logging.getLogger(__name__)
 
@@ -226,11 +227,13 @@ class YahooMarketProvider(MarketProvider):
             # 재시도 가능한 에러는 데코레이터가 처리하므로 여기서는 None 반환
             return None
     
+    @track_performance("yahoo_get_price")
     def get_price(self, symbol: str, date: Optional[datetime] = None) -> float:
         """종가 조회"""
         ohlc = self.get_ohlc(symbol, date)
         return ohlc.close
     
+    @track_performance("yahoo_get_ohlc")
     def get_ohlc(self, symbol: str, date: Optional[datetime] = None) -> OHLC:
         """
         OHLC 조회
@@ -291,11 +294,13 @@ class KISMarketProvider(MarketProvider):
         self.requests = requests
         self.base_url = get_kis_base_url()
         
+    @track_performance("kis_get_price")
     def get_price(self, symbol: str, date: Optional[datetime] = None) -> float:
         """현재가(또는 특정일 종가) 조회"""
         ohlc = self.get_ohlc(symbol, date)
         return ohlc.close
         
+    @track_performance("kis_get_ohlc")
     def get_ohlc(self, symbol: str, date: Optional[datetime] = None) -> OHLC:
         """OHLC 및 당일 데이터 조회"""
         # Domestic Stock 전용 (6자리 숫자)
@@ -425,6 +430,12 @@ def get_market_provider(provider_name: str = "dummy") -> MarketProvider:
                 logger.warning(f"지원하지 않는 시세 제공자 무시: {n}")
         if not providers:
             return DummyMarketProvider()
+        
+        log_with_extra(
+            logger, logging.INFO,
+            f"MarketProvider 생성: count={len(providers)}, names={names}",
+            extra={"provider_names": names, "provider_count": len(providers)}
+        )
         return HybridMarketProvider(providers)
     
     if name == "dummy":
